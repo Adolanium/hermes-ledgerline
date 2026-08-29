@@ -33,7 +33,7 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 const PLUGIN_ID = 'ledgerline'
 const PLUGIN_NAME = 'Ledgerline'
 const ROUTE = '/ledgerline'
-const VERSION = '0.1.3'
+const VERSION = '0.1.4'
 const PAGE_SIZE = 100
 const KNOWN_ROWS_CAP = 1000
 // Enough daily rows to cover the 1st of a 31-day month on its 31st.
@@ -729,6 +729,32 @@ function fmtUsd(value) {
   if (v < 0.01) return `$${v.toFixed(4)}`
   if (v < 1) return `$${v.toFixed(3)}`
   return `$${v.toFixed(2)}`
+}
+
+function localDayKey(date) {
+  const d = date instanceof Date ? date : new Date(date)
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+// One row per calendar day in the window so a short history still
+// occupies the full tape instead of four lonely bars.
+function fillDailyRange(daily, days, now = new Date()) {
+  const map = new Map((daily || []).map(d => [String(d.day || ''), d]))
+  const out = []
+  const n = Math.max(1, num(days) || 30)
+  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  for (let i = n - 1; i >= 0; i--) {
+    const d = new Date(end.getFullYear(), end.getMonth(), end.getDate() - i)
+    const key = localDayKey(d)
+    const row = map.get(key)
+    out.push(
+      row || { day: key, actual: 0, estimated: 0, input: 0, cacheRead: 0, output: 0, sessions: 0 }
+    )
+  }
+  return out
 }
 
 function fmtCount(value) {
@@ -2288,6 +2314,100 @@ const text = {
   accent: 'var(--ui-accent)'
 }
 const mono = 'var(--font-mono)'
+const moneyStyle = { fontFamily: mono, fontVariantNumeric: 'tabular-nums lining-nums', fontFeatureSettings: '"tnum" 1, "lnum" 1' }
+const pageFill = { padding: '18px 20px 28px', width: '100%', boxSizing: 'border-box' }
+const splitWide = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
+  gap: '28px 40px',
+  alignItems: 'start'
+}
+
+function moneyTone(tone) {
+  if (tone === 'bad') return text.red
+  if (tone === 'warn') return 'var(--ui-yellow)'
+  if (tone === 'good') return text.green
+  if (tone === 'muted') return text.tertiary
+  return text.primary
+}
+
+function LedgerDots() {
+  return jsx('span', {
+    'aria-hidden': true,
+    style: {
+      flex: 1,
+      minWidth: 12,
+      margin: '0 8px',
+      borderBottom: '1px dotted var(--ui-stroke-secondary)',
+      transform: 'translateY(-0.35em)'
+    }
+  })
+}
+
+function LedgerRule({ heavy }) {
+  if (heavy) {
+    return jsxs('div', {
+      style: { margin: '6px 0 4px' },
+      children: [
+        jsx('div', { style: { borderTop: '1px solid var(--ui-stroke-secondary)' } }),
+        jsx('div', { style: { borderTop: '1px solid var(--ui-text-primary)', marginTop: 2 } })
+      ]
+    })
+  }
+  return jsx('div', { style: { borderTop: '1px solid var(--ui-stroke-tertiary)', margin: '4px 0' } })
+}
+
+function LedgerRow({ label, value, tone, indent, strong, title, onClick }) {
+  const body = jsxs('div', {
+    style: {
+      display: 'flex',
+      alignItems: 'baseline',
+      padding: '3px 0',
+      paddingLeft: indent || 0,
+      fontSize: '0.75rem'
+    },
+    children: [
+      jsx('span', {
+        style: { color: text.secondary, flexShrink: 1, minWidth: 0, maxWidth: '58%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+        children: label
+      }),
+      jsx(LedgerDots, {}),
+      jsx('span', {
+        style: { ...moneyStyle, color: moneyTone(tone), fontWeight: strong ? 600 : 400, flexShrink: 0, minWidth: 76, textAlign: 'right' },
+        children: value
+      })
+    ]
+  })
+  if (!onClick) return jsx('div', { title, children: body })
+  return jsx('button', {
+    type: 'button',
+    title,
+    onClick,
+    style: {
+      display: 'block',
+      width: '100%',
+      textAlign: 'left',
+      font: 'inherit',
+      border: 'none',
+      background: 'transparent',
+      cursor: 'pointer',
+      padding: 0
+    },
+    children: body
+  })
+}
+
+function TokenSplit({ input, cacheRead, output }) {
+  const tot = num(input) + num(cacheRead) + num(output)
+  if (!tot) return null
+  const seg = (n, opacity, key) =>
+    n > 0 ? jsx('div', { style: { width: `${(n / tot) * 100}%`, height: '100%', background: 'var(--ui-accent)', opacity } }, key) : null
+  return jsxs('div', {
+    title: `${fmtCount(input)} in · ${fmtCount(cacheRead)} cache · ${fmtCount(output)} out`,
+    style: { display: 'flex', height: 3, background: 'var(--ui-stroke-secondary)', overflow: 'hidden', marginTop: 4 },
+    children: [seg(num(input), 1, 'in'), seg(num(cacheRead), 0.45, 'cache'), seg(num(output), 0.22, 'out')]
+  })
+}
 
 function Row({ label, value, tone }) {
   return jsxs('div', {
@@ -2383,40 +2503,50 @@ function AboutTab() {
   const connection = capabilities.activeConnectionId ? host.activeConnectionId() : null
 
   return jsxs('div', {
-    style: { padding: 16, maxWidth: 720 },
+    style: { ...pageFill, ...splitWide },
     children: [
-      jsx('h2', { style: { fontSize: '0.8rem', fontWeight: 600, margin: '0 0 4px' }, children: t('aboutHeading') }),
-      jsx(Row, { label: t('gateway'), value: gateway, tone: gateway === 'open' ? 'good' : 'bad' }),
-      jsx(Row, { label: t('profile'), value: profile || '(none)' }),
-      jsx(Row, { label: t('connection'), value: connection || 'local' }),
-      jsx(Row, {
-        label: t('backend'),
-        value: probe ? (probe.gateway.ok ? `${probe.gateway.version} (${probe.gateway.releaseDate})` : probe.gateway.error) : t('probing'),
-        tone: probe ? (probe.gateway.ok ? 'good' : 'bad') : undefined
-      }),
-      jsx(Row, {
-        label: t('mode'),
-        value: probe ? (mode === 'full' ? t('full') : t('rpcOnly')) : t('probing'),
-        tone: probe ? (mode === 'full' ? 'good' : 'bad') : undefined
-      }),
-      probe && probe.gateway.hermesHome ? jsx(Row, { label: t('hermesHome'), value: probe.gateway.hermesHome }) : null,
-      jsx('h2', { style: { fontSize: '0.8rem', fontWeight: 600, margin: '12px 0 4px' }, children: t('doors') }),
-      jsx(DoorRows, { t, doors: capabilities }),
-      jsx('h2', { style: { fontSize: '0.8rem', fontWeight: 600, margin: '12px 0 4px' }, children: t('backendDoors') }),
-      probe
-        ? jsx(DoorRows, { t, doors: { coreRest: probe.coreRest.ok, cliExec: probe.cliExec.ok } })
-        : jsx(Muted, { children: t('probing') }),
       jsxs('div', {
-        style: { marginTop: 12, display: 'flex', gap: 6 },
+        style: { minWidth: 0 },
         children: [
-          jsx(SmallButton, { onClick: () => void runProbe(), children: t('reprobe') }),
-          jsx(SmallButton, {
-            onClick: async () => {
-              const report = diagnosticsText({ gateway, profile, connection, probe, mode, capabilities })
-              const ok = os && typeof os.writeClipboard === 'function' ? await os.writeClipboard(report) : false
-              host.notify({ kind: ok ? 'info' : 'warning', message: ok ? t('diagCopied') : t('diagNoClipboard') })
-            },
-            children: t('diagCopy')
+          jsx('h2', { style: { fontSize: '0.8rem', fontWeight: 600, margin: '0 0 8px' }, children: t('aboutHeading') }),
+          jsx(Row, { label: t('gateway'), value: gateway, tone: gateway === 'open' ? 'good' : 'bad' }),
+          jsx(Row, { label: t('profile'), value: profile || '(none)' }),
+          jsx(Row, { label: t('connection'), value: connection || 'local' }),
+          jsx(Row, {
+            label: t('backend'),
+            value: probe ? (probe.gateway.ok ? `${probe.gateway.version} (${probe.gateway.releaseDate})` : probe.gateway.error) : t('probing'),
+            tone: probe ? (probe.gateway.ok ? 'good' : 'bad') : undefined
+          }),
+          jsx(Row, {
+            label: t('mode'),
+            value: probe ? (mode === 'full' ? t('full') : t('rpcOnly')) : t('probing'),
+            tone: probe ? (mode === 'full' ? 'good' : 'bad') : undefined
+          }),
+          probe && probe.gateway.hermesHome ? jsx(Row, { label: t('hermesHome'), value: probe.gateway.hermesHome }) : null
+        ]
+      }),
+      jsxs('div', {
+        style: { minWidth: 0 },
+        children: [
+          jsx('h2', { style: { fontSize: '0.8rem', fontWeight: 600, margin: '0 0 8px' }, children: t('doors') }),
+          jsx(DoorRows, { t, doors: capabilities }),
+          jsx('h2', { style: { fontSize: '0.8rem', fontWeight: 600, margin: '16px 0 8px' }, children: t('backendDoors') }),
+          probe
+            ? jsx(DoorRows, { t, doors: { coreRest: probe.coreRest.ok, cliExec: probe.cliExec.ok } })
+            : jsx(Muted, { children: t('probing') }),
+          jsxs('div', {
+            style: { marginTop: 16, display: 'flex', gap: 6 },
+            children: [
+              jsx(SmallButton, { onClick: () => void runProbe(), children: t('reprobe') }),
+              jsx(SmallButton, {
+                onClick: async () => {
+                  const report = diagnosticsText({ gateway, profile, connection, probe, mode, capabilities })
+                  const ok = os && typeof os.writeClipboard === 'function' ? await os.writeClipboard(report) : false
+                  host.notify({ kind: ok ? 'info' : 'warning', message: ok ? t('diagCopied') : t('diagNoClipboard') })
+                },
+                children: t('diagCopy')
+              })
+            ]
           })
         ]
       })
@@ -2500,19 +2630,16 @@ function SessionRow({ session, selected, onSelect, scan, treeCost, branched }) {
       jsxs('div', {
         style: { display: 'flex', gap: 6, alignItems: 'baseline', minWidth: 0 },
         children: [
-          session.isActive ? jsx('span', { title: 'active', style: { color: text.green, fontSize: '0.6rem' }, children: '●' }) : null,
+          session.isActive ? jsx(Codicon, { name: 'circle-filled', size: 8, style: { color: text.green, flexShrink: 0 } }) : null,
           jsx('span', {
             style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.8rem', color: text.primary },
             children: sessionLabel(session)
           }),
           session.hasUsage
-            ? jsxs('span', {
-                style: { fontFamily: mono, fontSize: '0.7rem', color: text.secondary, display: 'inline-flex', gap: 4, alignItems: 'baseline', flexShrink: 0 },
+            ? jsx('span', {
+                style: { ...moneyStyle, fontSize: '0.75rem', color: mark ? text.accent : text.secondary, flexShrink: 0, minWidth: 72, textAlign: 'right' },
                 title: mark ? EN.trueCostTip : undefined,
-                children: [
-                  mark ? jsx('span', { style: { color: text.accent }, children: '\u21b3' }) : null,
-                  fmtUsd(display)
-                ]
+                children: fmtUsd(display)
               })
             : null
         ]
@@ -2777,15 +2904,15 @@ function SessionSummary({ t, session }) {
   const showTree = branched || (tree !== null && cost !== null && Math.abs(tree - cost) > 1e-9)
   const stat = (label, value) =>
     jsxs('div', {
-      style: { minWidth: 90 },
+      style: { minWidth: 72 },
       children: [
         jsx('div', { style: { fontSize: '0.6875rem', color: text.tertiary }, children: label }),
-        jsx('div', { style: { fontFamily: mono, fontSize: '0.8rem', color: text.primary }, children: value })
+        jsx('div', { style: { ...moneyStyle, fontSize: '0.8rem', color: text.primary }, children: value })
       ]
     })
 
   return jsxs('div', {
-    style: { padding: 16 },
+    style: { padding: '16px 20px 24px' },
     children: [
       jsxs('div', {
         style: { display: 'flex', gap: 8, alignItems: 'baseline', marginBottom: 4 },
@@ -2807,7 +2934,7 @@ function SessionSummary({ t, session }) {
         ]
       }),
       jsxs(Muted, {
-        style: { display: 'flex', gap: 10, flexWrap: 'wrap', fontFamily: mono, marginBottom: 12 },
+        style: { display: 'flex', gap: 10, flexWrap: 'wrap', fontFamily: mono, marginBottom: 14 },
         children: [
           jsx('span', { children: session.id }),
           session.profile ? jsx('span', { style: { color: text.accent }, children: session.profile }) : null,
@@ -2818,19 +2945,25 @@ function SessionSummary({ t, session }) {
       }),
       session.hasUsage
         ? jsxs('div', {
-            style: { display: 'flex', gap: 18, flexWrap: 'wrap' },
+            style: { minWidth: 0, marginBottom: 8 },
             children: [
-              stat(t('spend'), `${fmtUsd(cost)}${session.cost.status ? ` (${session.cost.status})` : ''}`),
-              showTree ? stat(t('trueCost'), fmtUsd(tree)) : null,
-              stat('input', fmtCount(session.tokens.input)),
-              stat('cache read', fmtCount(session.tokens.cacheRead)),
-              stat('cache write', fmtCount(session.tokens.cacheWrite)),
-              stat('output', fmtCount(session.tokens.output)),
-              stat('reasoning', fmtCount(session.tokens.reasoning)),
-              stat(t('cacheHit'), fmtPct(rate)),
-              stat(t('tools'), String(session.toolCalls)),
-              stat(t('msgs'), String(session.messageCount)),
-              stat(t('duration'), fmtDuration(durationSeconds(session)))
+              jsx(LedgerRow, { label: t('spend'), value: `${fmtUsd(cost)}${session.cost.status ? ` (${session.cost.status})` : ''}` }),
+              showTree ? jsx(LedgerRow, { label: t('trueCost'), value: fmtUsd(tree), strong: true }) : null,
+              jsx(TokenSplit, { input: session.tokens.input, cacheRead: session.tokens.cacheRead, output: session.tokens.output }),
+              jsxs('div', {
+                style: { display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 10 },
+                children: [
+                  stat('input', fmtCount(session.tokens.input)),
+                  stat('cache read', fmtCount(session.tokens.cacheRead)),
+                  stat('cache write', fmtCount(session.tokens.cacheWrite)),
+                  stat('output', fmtCount(session.tokens.output)),
+                  stat('reasoning', fmtCount(session.tokens.reasoning)),
+                  stat(t('cacheHit'), fmtPct(rate)),
+                  stat(t('tools'), String(session.toolCalls)),
+                  stat(t('msgs'), String(session.messageCount)),
+                  stat(t('duration'), fmtDuration(durationSeconds(session)))
+                ]
+              })
             ]
           })
         : jsx(Muted, { children: t('fromRpc') }),
@@ -2841,7 +2974,7 @@ function SessionSummary({ t, session }) {
 
 // Drag handle between the list and the detail. Width lives in ctx.storage.
 function useDividerWidth() {
-  const [width, setWidth] = useState(() => stored('listWidth', 300))
+  const [width, setWidth] = useState(() => stored('listWidth', 340))
   const dragging = useRef(null)
   const onPointerDown = e => {
     dragging.current = { startX: e.clientX, startWidth: width }
@@ -3094,60 +3227,46 @@ function SubagentsPane({ t, analysis, session }) {
 }
 
 function ReceiptLine({ t, line, session }) {
-  const indent = 8 + num(line.depth) * 12
-  const usd = line.kind === 'unpriced' ? t('unpricedChild') : line.kind === 'artifact' ? '' : fmtUsd(line.usd)
-  const label = line.kind === 'own' ? t('ownWork') : line.label
+  const indent = line.kind === 'own' ? 0 : 12 + Math.max(0, num(line.depth) - 1) * 10
+  const value = line.kind === 'unpriced' ? t('unpricedChild') : line.kind === 'artifact' ? t('openFile') : fmtUsd(line.usd)
+  const label = line.kind === 'own' ? t('ownWork') : line.kind === 'artifact' ? line.label : line.label
   const tip = line.transcriptUsd !== null && line.transcriptUsd !== undefined
     ? `transcript ${fmtUsd(line.transcriptUsd)}`
     : line.kind === 'artifact'
-      ? t('openFile')
+      ? line.path
       : line.childId || undefined
   const clickChild = line.kind === 'child' && line.childId
   const clickFile = line.kind === 'artifact' && line.path && canRevealPath()
-  const inner = jsxs('div', {
-    style: { display: 'flex', gap: 10, alignItems: 'baseline', padding: '2px 0', fontSize: '0.75rem', paddingLeft: indent },
-    children: [
-      jsx('span', { style: { color: text.tertiary, minWidth: 64 }, children: line.kind === 'own' ? t('ownWork') : line.kind === 'artifact' ? t('openFile') : line.kind === 'unpriced' ? t('unpricedChild') : '\u21b3' }),
-      jsx('span', { style: { color: text.primary, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: label }),
-      usd ? jsx('span', { style: { fontFamily: mono, color: text.secondary, flexShrink: 0 }, children: usd }) : null
-    ]
+  const onClick = clickChild
+    ? () => openChildSession(line.childId, line.profile || (session && session.profile) || '', t)
+    : clickFile
+      ? () => revealOrCopy(line.path, t)
+      : undefined
+  return jsx(LedgerRow, {
+    label,
+    value,
+    indent,
+    tone: line.kind === 'unpriced' ? 'muted' : line.kind === 'own' ? undefined : undefined,
+    title: tip,
+    onClick
   })
-  if (clickChild) {
-    return jsx('button', {
-      type: 'button',
-      title: tip,
-      onClick: () => openChildSession(line.childId, line.profile || (session && session.profile) || '', t),
-      style: { display: 'block', width: '100%', textAlign: 'left', font: 'inherit', border: 'none', background: 'transparent', cursor: 'pointer', padding: 0 },
-      children: inner
-    })
-  }
-  if (clickFile) {
-    return jsx('button', {
-      type: 'button',
-      title: tip,
-      onClick: () => revealOrCopy(line.path, t),
-      style: { display: 'block', width: '100%', textAlign: 'left', font: 'inherit', border: 'none', background: 'transparent', cursor: 'pointer', padding: 0 },
-      children: inner
-    })
-  }
-  return jsx('div', { title: tip, children: inner })
 }
 
 function ReceiptPane({ t, session, receipt }) {
   if (!receipt || !receipt.hasTree) return null
-  const total = `${receipt.floor ? `${t('trueCostFloor')} ` : ''}${fmtUsd(receipt.totalUsd)}`
+  const items = receipt.lines.filter(l => l.kind !== 'artifact' || l.path)
   return jsxs('div', {
-    style: { marginBottom: 12, padding: '8px 0', borderBottom: '1px solid var(--ui-stroke-tertiary)' },
+    style: { marginBottom: 14, minWidth: 0 },
     children: [
-      jsxs('div', {
-        style: { display: 'flex', gap: 10, alignItems: 'baseline', marginBottom: 4 },
-        children: [
-          jsx('div', { style: { fontSize: '0.6875rem', color: text.tertiary }, children: t('receipt') }),
-          jsx('div', { style: { fontFamily: mono, fontSize: '0.8rem', color: text.primary }, children: total }),
-          jsx('div', { style: { fontSize: '0.6875rem', color: text.tertiary }, children: receipt.included ? t('trueCostTip') : t('trueCostAdded') })
-        ]
+      jsx('div', { style: { fontSize: '0.6875rem', color: text.tertiary, marginBottom: 4 }, children: t('receipt') }),
+      items.map((line, i) => jsx(ReceiptLine, { t, line, session }, `${line.kind}-${line.childId || line.path || i}`)),
+      jsx(LedgerRule, { heavy: true }),
+      jsx(LedgerRow, {
+        label: receipt.floor ? `${t('trueCost')} (${t('trueCostFloor')})` : t('trueCost'),
+        value: fmtUsd(receipt.totalUsd),
+        strong: true
       }),
-      receipt.lines.filter(l => l.kind !== 'artifact' || l.path).map((line, i) => jsx(ReceiptLine, { t, line, session }, `${line.kind}-${line.childId || line.path || i}`))
+      jsx(Muted, { style: { marginTop: 4 }, children: receipt.included ? t('trueCostTip') : t('trueCostAdded') })
     ]
   })
 }
@@ -3186,25 +3305,34 @@ function SessionDetail({ t, session }) {
   return jsxs('div', {
     style: { marginTop: 16 },
     children: [
-      jsx(ReceiptPane, { t, session, receipt }),
-      analysis.about
-        ? jsxs('div', {
-            style: { marginBottom: 8 },
+      jsxs('div', {
+        style: { ...splitWide, marginBottom: 12 },
+        children: [
+          jsx(ReceiptPane, { t, session, receipt }),
+          jsxs('div', {
+            style: { minWidth: 0 },
             children: [
-              jsx('div', { style: { fontSize: '0.6875rem', color: text.tertiary }, children: t('about') }),
-              jsx('div', { style: { fontSize: '0.75rem', color: text.secondary, whiteSpace: 'pre-wrap', maxHeight: 60, overflow: 'hidden' }, children: analysis.about })
+              analysis.about
+                ? jsxs('div', {
+                    style: { marginBottom: 10 },
+                    children: [
+                      jsx('div', { style: { fontSize: '0.6875rem', color: text.tertiary }, children: t('about') }),
+                      jsx('div', { style: { fontSize: '0.75rem', color: text.secondary, whiteSpace: 'pre-wrap' }, children: analysis.about })
+                    ]
+                  })
+                : null,
+              jsxs('div', {
+                children: [
+                  jsx('div', { style: { fontSize: '0.6875rem', color: text.tertiary }, children: t('summary') }),
+                  jsx('div', { style: { fontSize: '0.75rem', color: text.primary }, children: analysis.summary }),
+                  page && page.truncated ? jsx(Muted, { children: t('truncatedNote').replace('{n}', String(MESSAGE_PAGE * MESSAGE_PAGES)) }) : null
+                ]
+              })
             ]
           })
-        : null,
-      jsxs('div', {
-        style: { marginBottom: 10 },
-        children: [
-          jsx('div', { style: { fontSize: '0.6875rem', color: text.tertiary }, children: t('summary') }),
-          jsx('div', { style: { fontSize: '0.75rem', color: text.primary }, children: analysis.summary }),
-          page && page.truncated ? jsx(Muted, { children: t('truncatedNote').replace('{n}', String(MESSAGE_PAGE * MESSAGE_PAGES)) }) : null
         ]
       }),
-      jsx('div', { style: { display: 'flex', gap: 4, marginBottom: 8 }, children: subs.map(([key, label]) => jsx(SmallButton, { active: sub === key, onClick: () => setSub(key), children: label }, key)) }),
+      jsx('div', { style: { display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap' }, children: subs.map(([key, label]) => jsx(SmallButton, { active: sub === key, onClick: () => setSub(key), children: label }, key)) }),
       pane
     ]
   })
@@ -3237,7 +3365,7 @@ function LiveSubagentRow({ sa, t }) {
   const done = SUBAGENT_DONE.has(sa.status)
   const openable = !!(sa.id && capabilities.openSession)
   const body = [
-    jsx('span', { style: { color: !done ? text.accent : sa.status === 'completed' ? text.green : text.red }, children: done ? (sa.status === 'completed' ? '✓' : '✗') : '●' }),
+    jsx(Codicon, { name: !done ? 'circle-filled' : sa.status === 'completed' ? 'check' : 'error', size: 10, style: { color: !done ? text.accent : sa.status === 'completed' ? text.green : text.red, flexShrink: 0 } }),
     jsx('span', { style: { color: text.primary, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: sa.goal || sa.model || 'subagent' }),
     jsx('span', { style: { color: text.tertiary }, children: done ? fmtDuration(sa.durationS || 0) : sa.currentTool || sa.status })
   ]
@@ -3292,7 +3420,7 @@ function LiveCard() {
   const line = (label, value, tone) =>
     jsxs('div', {
       style: { display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: '0.75rem', padding: '1px 0' },
-      children: [jsx('span', { style: { color: text.tertiary }, children: label }), jsx('span', { style: { fontFamily: mono, color: tone === 'bad' ? text.red : text.primary }, children: value })]
+      children: [jsx('span', { style: { color: text.tertiary }, children: label }), jsx('span', { style: { ...moneyStyle, color: tone === 'bad' ? text.red : text.primary }, children: value })]
     })
 
   return jsxs('div', {
@@ -3301,7 +3429,7 @@ function LiveCard() {
       jsxs('div', {
         style: { display: 'flex', gap: 6, alignItems: 'baseline' },
         children: [
-          jsx('span', { style: { color: busy ? text.accent : text.tertiary, fontSize: '0.6rem' }, children: '●' }),
+          jsx(Codicon, { name: busy ? 'circle-filled' : 'circle-outline', size: 10, style: { color: busy ? text.accent : text.tertiary, flexShrink: 0 } }),
           jsx('span', { style: { fontSize: '0.75rem', color: text.primary, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: stored ? sessionLabel(stored) : storedId || rid }),
           jsx('span', { style: { fontSize: '0.6875rem', color: text.tertiary }, children: busy ? t('liveBusy') : t('liveIdle') })
         ]
@@ -3368,23 +3496,56 @@ function Stat({ label, value, tip, tone }) {
   return tip ? jsx(Tip, { label: tip, children: body }) : body
 }
 
-function DailyBars({ t, daily }) {
-  const rows = daily.slice(-30)
+function DailyBars({ t, daily, days }) {
+  const rows = fillDailyRange(daily, days)
   const max = Math.max(0.000001, ...rows.map(d => d.actual || d.estimated))
+  const today = localDayKey(new Date())
+  const bar = { flex: '1 1 0', minWidth: 0 }
   return jsxs('div', {
+    style: { minWidth: 0 },
     children: [
-      jsx('div', { style: { fontSize: '0.6875rem', color: text.tertiary, marginBottom: 4 }, children: t('ovDaily') }),
+      jsx('div', { style: { fontSize: '0.6875rem', color: text.tertiary, marginBottom: 6 }, children: t('ovDaily') }),
       jsx('div', {
-        style: { display: 'flex', alignItems: 'flex-end', gap: 2, height: 60 },
+        style: { display: 'flex', alignItems: 'flex-end', gap: 2, height: 14 },
+        children: rows.map((d, i) => {
+          const isToday = d.day === today
+          const dayNum = Number(String(d.day || '').slice(-2))
+          const show = rows.length <= 12 || isToday || i === 0 || i === rows.length - 1 || dayNum === 1 || i % 5 === 0
+          return jsx('div', {
+            title: d.day,
+            style: {
+              ...bar,
+              fontSize: '0.5625rem',
+              lineHeight: 1,
+              textAlign: 'center',
+              color: isToday ? text.accent : text.tertiary,
+              fontVariantNumeric: 'tabular-nums'
+            },
+            children: show ? String(dayNum) : ''
+          }, `lab-${d.day}`)
+        })
+      }),
+      jsx('div', { style: { borderTop: '1px solid var(--ui-text-primary)', opacity: 0.55, marginTop: 2 } }),
+      jsx('div', {
+        style: { display: 'flex', alignItems: 'flex-start', gap: 2, height: 88 },
         children: rows.map(d => {
           const usd = d.actual || d.estimated
-          const h = Math.max(1, Math.round((usd / max) * 56))
+          const h = usd > 0 ? Math.max(2, Math.round((usd / max) * 84)) : 0
           const prompt = d.input + d.cacheRead
           const cacheShare = prompt > 0 ? d.cacheRead / prompt : 0
-          return jsx(Tip, {
-            label: `${d.day}: ${fmtUsd(usd)}, ${d.sessions} sessions, ${fmtPct(cacheShare)} ${t('cacheReadShare')}`,
-            children: jsx('div', {
-              style: { width: 10, height: h, background: 'var(--ui-accent)', opacity: 0.35 + 0.65 * cacheShare, borderRadius: 1 }
+          const isToday = d.day === today
+          return jsx('div', {
+            style: { ...bar, height: 88 },
+            children: jsx(Tip, {
+              label: `${d.day}: ${fmtUsd(usd)}, ${d.sessions} sessions, ${fmtPct(cacheShare)} ${t('cacheReadShare')}`,
+              children: jsx('div', {
+                style: {
+                  width: '100%',
+                  height: h,
+                  background: 'var(--ui-accent)',
+                  opacity: isToday ? 1 : usd > 0 ? 0.28 + 0.62 * cacheShare : 0.08
+                }
+              })
             })
           }, d.day)
         })
@@ -3410,13 +3571,19 @@ function ModelTable({ t, byModel, byTask, rates, rows, days }) {
         return jsx(Tip, {
           label: modelRowTip(m, writes, rates),
           children: jsxs('div', {
-            style: { display: 'flex', gap: 10, alignItems: 'baseline', fontSize: '0.75rem', padding: '2px 0', flexWrap: 'wrap' },
+            style: { padding: '5px 0', borderBottom: '1px solid var(--ui-stroke-tertiary)' },
             children: [
-              jsx('span', { style: { fontFamily: mono, color: text.primary, minWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: m.model }),
-              jsx('span', { style: { fontFamily: mono, color: text.secondary, minWidth: 70 }, children: fmtUsd(m.estimated) }),
-              jsx('span', { style: { color: text.tertiary, minWidth: 120 }, children: tokens }),
-              jsx('span', { style: { color: text.tertiary }, children: usage.kind === 'helper' ? t('ovHelperOnly') : `${usage.sessions} ${t('ovSessions')}` }),
-              alts.length ? jsx('span', { style: { color: text.tertiary }, children: `${t('ovWhatIf')} ${alts.map(a => `${a.model} ${fmtUsd(a.usd)}`).join(', ')}` }) : null
+              jsxs('div', {
+                style: { display: 'flex', gap: 10, alignItems: 'baseline', fontSize: '0.75rem', flexWrap: 'wrap' },
+                children: [
+                  jsx('span', { style: { fontFamily: mono, color: text.primary, minWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: m.model }),
+                  jsx('span', { style: { ...moneyStyle, color: text.primary, minWidth: 72, textAlign: 'right' }, children: fmtUsd(m.estimated) }),
+                  jsx('span', { style: { color: text.tertiary, flex: 1, minWidth: 80 }, children: tokens }),
+                  jsx('span', { style: { color: text.tertiary }, children: usage.kind === 'helper' ? t('ovHelperOnly') : `${usage.sessions} ${t('ovSessions')}` }),
+                  alts.length ? jsx('span', { style: { color: text.tertiary }, children: `${t('ovWhatIf')} ${alts.map(a => `${a.model} ${fmtUsd(a.usd)}`).join(', ')}` }) : null
+                ]
+              }),
+              jsx(TokenSplit, { input: m.input, cacheRead: m.cacheRead, output: m.output })
             ]
           })
         }, m.model)
@@ -3544,7 +3711,7 @@ function BudgetBar({ label, state, t }) {
         style: { display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem' },
         children: [
           jsx('span', { style: { color: text.secondary }, children: label }),
-          jsx('span', { style: { fontFamily: mono, color: tone }, children: `${fmtUsd(state.spent)} / ${fmtUsd(state.limit)} (${state.level === 'over' ? t('budgetOver') : state.level === 'near' ? t('budgetNear') : t('budgetOk')})` })
+          jsx('span', { style: { ...moneyStyle, color: tone }, children: `${fmtUsd(state.spent)} / ${fmtUsd(state.limit)} (${state.level === 'over' ? t('budgetOver') : state.level === 'near' ? t('budgetNear') : t('budgetOk')})` })
         ]
       }),
       jsx('div', { style: { height: 4, background: 'var(--ui-stroke-secondary)', borderRadius: 2, marginTop: 2 }, children: jsx('div', { style: { width: `${width}%`, height: '100%', background: tone, borderRadius: 2 } }) })
@@ -3709,54 +3876,78 @@ function OverviewTab() {
   const recs = recommendations(q.data, rows, rates)
   const windowFigures = overviewFigures(q.data)
 
+  const monthTone = budget.month.level === 'over' ? 'bad' : budget.month.level === 'near' ? 'warn' : undefined
   return jsxs('div', {
-    style: { padding: 16, display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 900 },
+    style: { ...pageFill, display: 'flex', flexDirection: 'column', gap: 28 },
     children: [
       jsxs('div', {
-        style: { display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'flex-end' },
+        style: splitWide,
         children: [
-          jsx(Stat, { label: t('ovToday'), value: fmtUsd(figures.today) }),
-          jsx(Stat, { label: t('ov7'), value: fmtUsd(figures.last7) }),
-          jsx(Stat, { label: t('ov30'), value: fmtUsd(figures.last30) }),
-          jsx(Stat, { label: t('ovMonth'), value: fmtUsd(figures.monthToDate), tone: budget.month.level === 'over' ? 'bad' : budget.month.level === 'near' ? 'warn' : undefined }),
-          jsx(Stat, { label: t('ovProjected'), value: `${fmtUsd(figures.projectedMonth)} est`, tip: t('ovProjectedTip') }),
-          jsx(Stat, { label: `${t('ovCache')} (${days}d)`, value: fmtPct(rowsCacheRate(rows, days) ?? windowFigures.cacheHitRate) }),
-          jsx(Stat, { label: `${t('ovSessions')} (${days}d)`, value: String(windowFigures.sessions) }),
           jsxs('div', {
-            style: { marginLeft: 'auto', display: 'flex', gap: 4, alignItems: 'center' },
+            style: { minWidth: 0 },
             children: [
-              jsx('span', { style: { fontSize: '0.6875rem', color: text.tertiary }, children: t('ovWindow') }),
-              ...[7, 30, 90].map(d =>
-                jsx(
-                  SmallButton,
-                  {
-                    active: days === d,
-                    onClick: () => {
-                      setDays(d)
-                      remember('days', d)
-                    },
-                    children: `${d} ${t('ovDays')}`
-                  },
-                  d
-                )
-              )
+              jsxs('div', {
+                style: { display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' },
+                children: [
+                  jsx('span', { style: { fontSize: '0.6875rem', color: text.tertiary }, children: t('ovWindow') }),
+                  ...[7, 30, 90].map(d =>
+                    jsx(
+                      SmallButton,
+                      {
+                        active: days === d,
+                        onClick: () => {
+                          setDays(d)
+                          remember('days', d)
+                        },
+                        children: `${d} ${t('ovDays')}`
+                      },
+                      d
+                    )
+                  )
+                ]
+              }),
+              jsx(LedgerRow, { label: t('ovToday'), value: fmtUsd(figures.today) }),
+              jsx(LedgerRow, { label: t('ov7'), value: fmtUsd(figures.last7) }),
+              jsx(LedgerRow, { label: t('ov30'), value: fmtUsd(figures.last30) }),
+              jsx(LedgerRule, {}),
+              jsx(LedgerRow, { label: t('ovMonth'), value: fmtUsd(figures.monthToDate), tone: monthTone, strong: true }),
+              jsx(Tip, {
+                label: t('ovProjectedTip'),
+                children: jsx(LedgerRow, { label: t('ovProjected'), value: `${fmtUsd(figures.projectedMonth)} est`, tone: 'muted' })
+              }),
+              jsx(LedgerRule, { heavy: true }),
+              jsx(Muted, {
+                style: { marginTop: 2 },
+                children: `${fmtPct(rowsCacheRate(rows, days) ?? windowFigures.cacheHitRate)} ${t('ovCache')} · ${windowFigures.sessions} ${t('ovSessions')} · ${days}d`
+              }),
+              jsxs('div', {
+                style: { marginTop: 18 },
+                children: [
+                  jsx('div', { style: { fontSize: '0.6875rem', color: text.tertiary, marginBottom: 4 }, children: t('budgets') }),
+                  jsx(BudgetBar, { label: budgets.derived ? t('budgetMonthSum') : t('budgetMonth'), state: budget.month, t }),
+                  jsx(BudgetEditor, { t }),
+                  jsx(Muted, { style: { marginTop: 4 }, children: t('budgetHelp') })
+                ]
+              })
+            ]
+          }),
+          jsxs('div', {
+            style: { minWidth: 0 },
+            children: [
+              jsx(DailyBars, { t, daily: q.data.daily, days }),
+              jsx('div', { style: { marginTop: 20 }, children: jsx(Recommendations, { t, recs }) })
             ]
           })
         ]
       }),
-      jsxs('div', {
-        children: [
-          jsx('div', { style: { fontSize: '0.6875rem', color: text.tertiary, marginBottom: 4 }, children: t('budgets') }),
-          jsx(BudgetBar, { label: budgets.derived ? t('budgetMonthSum') : t('budgetMonth'), state: budget.month, t }),
-          jsx(BudgetEditor, { t }),
-          jsx(Muted, { style: { marginTop: 4 }, children: t('budgetHelp') })
-        ]
-      }),
       q.data.profiles && q.data.profiles.length ? jsx(ProfileTable, { t, profiles: q.data.profiles, monthProfiles: qMonth.data ? qMonth.data.profiles : [], rows, days }) : null,
-      jsx(DailyBars, { t, daily: q.data.daily }),
-      jsx(ModelTable, { t, byModel: q.data.byModel, byTask: q.data.byTask, rates, rows, days }),
-      jsx(TaskTable, { t, byTask: q.data.byTask }),
-      jsx(Recommendations, { t, recs })
+      jsxs('div', {
+        style: splitWide,
+        children: [
+          jsx(ModelTable, { t, byModel: q.data.byModel, byTask: q.data.byTask, rates, rows, days }),
+          jsx(TaskTable, { t, byTask: q.data.byTask })
+        ]
+      })
     ]
   })
 }
@@ -4161,18 +4352,23 @@ function AlertsTab() {
   const figures = figuresQ.data ? overviewFigures(figuresQ.data) : null
   const budget = budgetState(budgets, figures, null)
   return jsxs('div', {
-    style: { padding: 16, maxWidth: 900, display: 'flex', flexDirection: 'column', gap: 12 },
+    style: { ...pageFill, ...splitWide },
     children: [
       jsxs('div', {
+        style: { minWidth: 0, display: 'flex', flexDirection: 'column', gap: 16 },
         children: [
-          jsx('div', { style: { fontSize: '0.6875rem', color: text.tertiary, marginBottom: 4 }, children: t('budgets') }),
-          jsx(BudgetBar, { label: t('budgetMonth'), state: budget.month, t }),
-          jsx(BudgetEditor, { t }),
-          jsx(Muted, { style: { marginTop: 4 }, children: t('budgetHelp') })
+          jsxs('div', {
+            children: [
+              jsx('div', { style: { fontSize: '0.6875rem', color: text.tertiary, marginBottom: 4 }, children: t('budgets') }),
+              jsx(BudgetBar, { label: t('budgetMonth'), state: budget.month, t }),
+              jsx(BudgetEditor, { t }),
+              jsx(Muted, { style: { marginTop: 4 }, children: t('budgetHelp') })
+            ]
+          }),
+          jsx(ChannelPicker, { t })
         ]
       }),
-      jsx(ChannelPicker, { t }),
-      jsx(ReportsPanel, { t })
+      jsx('div', { style: { minWidth: 0 }, children: jsx(ReportsPanel, { t }) })
     ]
   })
 }
@@ -4231,9 +4427,8 @@ function Page() {
       jsxs('div', {
         style: { display: 'flex', alignItems: 'baseline', gap: 10, padding: '10px 16px 6px', borderBottom: '1px solid var(--ui-stroke-secondary)' },
         children: [
-          jsx('h1', { style: { fontSize: '1rem', fontWeight: 600, color: text.primary }, children: t('title') }),
+          jsx('h1', { style: { fontSize: '1rem', fontWeight: 600, color: text.primary, letterSpacing: '-0.02em' }, title: `${PLUGIN_NAME} ${VERSION}`, children: t('title') }),
           jsx('span', { style: { color: text.tertiary, fontSize: '0.75rem' }, children: t('subtitle') }),
-          jsx(Badge, { variant: 'muted', children: VERSION }),
           jsx('div', { style: { marginLeft: 'auto' }, children: jsx(ScopePicker, { t }) }),
           jsx('div', {
             style: { display: 'flex', gap: 4 },
