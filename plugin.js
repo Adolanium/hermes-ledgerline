@@ -19,6 +19,7 @@
  *   data          rpc / coreRest / cli adapters with typed errors, plus the
  *                 session reads and analysis rungs built on them
  *   sessions      pure shaping: normalize rows, filter, sort, format
+ *   true cost     parent plus children, receipt lines, live estimate
  *   ui            React components built from the SDK kit
  *   register      contributions (page, nav, palette, keybind, statusbar chip)
  */
@@ -32,7 +33,7 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 const PLUGIN_ID = 'ledgerline'
 const PLUGIN_NAME = 'Ledgerline'
 const ROUTE = '/ledgerline'
-const VERSION = '0.1.2'
+const VERSION = '0.1.3'
 const PAGE_SIZE = 100
 const KNOWN_ROWS_CAP = 1000
 // Enough daily rows to cover the 1st of a 31-day month on its 31st.
@@ -40,6 +41,8 @@ const MONTH_DAYS = 31
 const WHATIF_MIN_USD = 0.05
 const MESSAGE_PAGE = 500
 const MESSAGE_PAGES = 6
+// Parent + children + grandchildren. Deeper chains stop here.
+const TREE_DEPTH = 3
 
 // ---------------------------------------------------------------------------
 // errors
@@ -696,10 +699,12 @@ function filterSessions(rows, filters = {}) {
 }
 
 // sort = 'recent' | 'costliest' | 'tokens' | 'tools'
-function sortSessions(rows, sort = 'recent') {
+// `index` is childIndex(rows). Costliest ranks by list-tree true cost.
+function sortSessions(rows, sort = 'recent', index) {
   const copy = rows.slice()
+  const tree = index || (sort === 'costliest' ? childIndex(rows) : null)
   const by = fn => copy.sort((a, b) => fn(b) - fn(a) || b.lastActive - a.lastActive)
-  if (sort === 'costliest') return by(s => sessionCost(s) || 0)
+  if (sort === 'costliest') return by(s => listTreeCost({ session: s, index: tree }) || 0)
   if (sort === 'tokens') return by(s => tokenTotal(s.tokens))
   if (sort === 'tools') return by(s => s.toolCalls)
   return by(s => s.lastActive)
@@ -870,6 +875,24 @@ function callSummary(name, args) {
   return out.length > 160 ? `${out.slice(0, 157)}...` : out
 }
 
+// Child session id from a delegate_task result row or a live subagent
+// payload. `subagent_id` is a delegation key, not a session id, so it
+// is left out. Empty string when nothing matches.
+function pickChildSessionId(entry) {
+  if (!entry || typeof entry !== 'object') return ''
+  const keys = ['child_session_id', 'session_id', 'stored_session_id', 'stored_id', 'childSessionId', 'sessionId']
+  for (const k of keys) {
+    const v = entry[k]
+    if (typeof v === 'string' && v.trim()) return v.trim()
+  }
+  const nested = entry.session
+  if (nested && typeof nested === 'object') {
+    const inner = pickChildSessionId(nested)
+    if (inner) return inner
+  }
+  return ''
+}
+
 // delegate_task results carry one entry per child; goals live in the call args.
 function subagentsFromCall(call) {
   const data = safeJson(typeof call.result === 'string' ? call.result : '') || (call.result && typeof call.result === 'object' ? call.result : null)
@@ -889,6 +912,7 @@ function subagentsFromCall(call) {
       costUsd: numOrNull(e.cost_usd),
       costStatus: e.cost_status || '',
       error: e.error ? trimError(e.error) : '',
+      childId: pickChildSessionId(e),
       dispatchedAt: call.timestamp
     }
   })
@@ -944,9 +968,10 @@ function analyzeMessages(messages) {
   for (const c of calls) {
     const path = filePathOf(c.name, c.args)
     if (!path) continue
-    const f = byPath.get(path) || { path, reads: 0, writes: 0, tools: [] }
+    const f = byPath.get(path) || { path, reads: 0, writes: 0, tools: [], artifact: false }
     if (WRITE_TOOLS.has(c.name) || ARTIFACT_TOOLS.has(c.name)) f.writes += 1
     else f.reads += 1
+    if (ARTIFACT_TOOLS.has(c.name)) f.artifact = true
     if (!f.tools.includes(c.name)) f.tools.push(c.name)
     byPath.set(path, f)
   }
@@ -1085,11 +1110,13 @@ function reduceLiveEvent(state, event, now = Date.now()) {
     case 'subagent.complete': {
       const key = subagentKey(p, prev.subagents.length, prev.subagents)
       const idx = prev.subagents.findIndex(sa => sa.key === key)
-      const old = idx >= 0 ? prev.subagents[idx] : { key, id: p.subagent_id || '', parentId: p.parent_id || '', goal: p.goal || '', model: '', status: 'running', currentTool: '', toolCount: 0, tokens: { input: 0, output: 0 }, apiCalls: 0, durationS: null, filesRead: [], filesWritten: [], summary: '', startedAt: now }
+      const old = idx >= 0 ? prev.subagents[idx] : { key, id: '', parentId: p.parent_id || p.parent_session_id || '', goal: p.goal || '', model: '', status: 'running', currentTool: '', toolCount: 0, tokens: { input: 0, output: 0 }, apiCalls: 0, durationS: null, filesRead: [], filesWritten: [], summary: '', startedAt: now }
       const done = event.type === 'subagent.complete'
       const status = done ? (SUBAGENT_DONE.has(p.status) ? p.status : p.status || 'completed') : p.status && SUBAGENT_DONE.has(p.status) ? p.status : old.status
       const sa = {
         ...old,
+        id: pickChildSessionId(p) || old.id,
+        parentId: p.parent_id || p.parent_session_id || old.parentId,
         model: p.model || old.model,
         goal: p.goal || old.goal,
         status,
@@ -1206,7 +1233,9 @@ function estimateUsd(usage, model, blended, options) {
 //       tools: raw.tools, skills: raw.skills }
 //   overviewFigures(analytics, now) -> spend windows and a month projection
 //   recommendations(analytics, sessions, rates) -> [{ id, level, title, detail, usd }]
-//   budgetState(budgets, figures, session) -> { month: {...}, session: {...} }
+//   budgetState(budgets, figures, session, treeUsd?) -> { month: {...}, session: {...} }
+//     treeUsd is the list-tree true cost for a session budget. Month totals
+//     stay on recorded own spend so children are not counted twice.
 // All pure. Dollar figures are what Hermes recorded (estimated unless the
 // provider reported a billed amount); projections are labelled as such.
 // ---------------------------------------------------------------------------
@@ -1471,12 +1500,13 @@ function combinedBudgets(own, perProfile) {
   return { month: parts.reduce((acc, x) => acc + x.month, 0), session: num(o.session) > 0 ? num(o.session) : null, derived: true, parts }
 }
 
-function budgetState(budgets, figures, session) {
+function budgetState(budgets, figures, session, treeUsd) {
   const b = budgets || {}
   const monthLimit = num(b.month) > 0 ? num(b.month) : null
   const sessionLimit = num(b.session) > 0 ? num(b.session) : null
   const monthSpent = figures ? figures.monthToDate : 0
-  const sessionSpent = session ? sessionCost(session) || 0 : 0
+  const own = session ? sessionCost(session) : null
+  const sessionSpent = treeUsd !== null && treeUsd !== undefined ? treeUsd : own || 0
   const level = (spent, limit) => (limit === null ? 'none' : spent >= limit ? 'over' : spent >= limit * 0.8 ? 'near' : 'ok')
   return {
     month: { limit: monthLimit, spent: monthSpent, ratio: monthLimit ? monthSpent / monthLimit : null, level: level(monthSpent, monthLimit) },
@@ -1536,7 +1566,10 @@ function buildDigest(session, analysis, opts = {}) {
   }
   if (a.subagents.length) {
     lines.push('Subagents:')
-    for (const sa of a.subagents.slice(0, 10)) lines.push(`- ${sa.status} ${sa.model || ''} ${fmtDuration(sa.durationSeconds)} ${sa.apiCalls} calls${sa.costUsd !== null ? ` ${fmtUsd(sa.costUsd)}` : ''}: ${sa.goal || sa.summary || ''}`.replace(/\s+/g, ' '))
+    for (const sa of a.subagents.slice(0, 10)) {
+      const id = sa.childId ? ` id=${sa.childId}` : ''
+      lines.push(`- ${sa.status} ${sa.model || ''}${id} ${fmtDuration(sa.durationSeconds)} ${sa.apiCalls} calls${sa.costUsd !== null ? ` ${fmtUsd(sa.costUsd)}` : ''}: ${sa.goal || sa.summary || ''}`.replace(/\s+/g, ' '))
+    }
   }
   return lines.join('\n')
 }
@@ -1548,6 +1581,7 @@ const EXPLAIN_INSTRUCTIONS = [
   '1. What went wrong (root cause per failed call, or "nothing failed").',
   '2. Where the tokens went and how to spend fewer next time (cache hit rate, context churn, tool output size).',
   '3. Two or three concrete changes for the next session (config, model choice, prompt shape).',
+  '4. Skills that would have helped (check skills_list if you can run tools). Name the skill and what it would have changed.',
   'Do not invent details that are not in the digest.'
 ].join('\n')
 
@@ -1638,6 +1672,183 @@ function scanSummary(analysis) {
 
 function scanKey(session) {
   return `${session.id}:${session.messageCount}`
+}
+
+// ---------------------------------------------------------------------------
+// true cost
+//
+// Interface:
+//   childIndex(rows) -> Map<parentId, Session[]>
+//   listTreeCost({ session, index }) -> usd|null
+//     Recorded own cost, plus descendant costs only when the parent row
+//     looks undercounted (older gateways). Newer Hermes already folds
+//     children into the parent estimate, so we do not add them again.
+//   trueCost({ session, analysis, rows }) -> Receipt
+//     Receipt lines: own, child (recorded|transcript), unpriced, artifact.
+//     Transcript fill-in is deduped by child session id.
+//   liveTrueCost({ ownUsd, subagents, estimateChild }) -> { usd, estimated, count }
+// ---------------------------------------------------------------------------
+
+function childIndex(rows) {
+  const map = new Map()
+  for (const r of rows || []) {
+    if (!r || !r.id || !r.parentId) continue
+    const list = map.get(r.parentId) || []
+    list.push(r)
+    map.set(r.parentId, list)
+  }
+  return map
+}
+
+function listDescendants(session, index, depth = 0, seen = new Set()) {
+  const out = []
+  if (!session || !session.id || depth >= TREE_DEPTH || seen.has(session.id)) return out
+  seen.add(session.id)
+  for (const child of (index && index.get(session.id)) || []) {
+    if (!child || !child.id || seen.has(child.id)) continue
+    out.push({ row: child, depth: depth + 1 })
+    for (const nested of listDescendants(child, index, depth + 1, seen)) out.push(nested)
+  }
+  return out
+}
+
+function descendantSum(session, index) {
+  let sum = 0
+  let priced = 0
+  for (const { row } of listDescendants(session, index)) {
+    const usd = sessionCost(row)
+    if (usd === null) continue
+    sum += usd
+    priced += 1
+  }
+  return { sum, priced }
+}
+
+// True cost from the session list only. No message fetch.
+function listTreeCost({ session, index }) {
+  if (!session) return null
+  const own = sessionCost(session)
+  const { sum } = descendantSum(session, index || childIndex([]))
+  if (own === null && sum === 0) return null
+  if (own === null) return sum
+  if (sum === 0) return own
+  if (own + 1e-9 >= sum) return own
+  return own + sum
+}
+
+function trueCost({ session, analysis, rows }) {
+  const s = session || {}
+  const a = analysis || { subagents: [], files: [] }
+  const index = childIndex(rows)
+  const covered = new Set()
+  const extra = []
+
+  for (const { row, depth } of listDescendants(s, index)) {
+    covered.add(row.id)
+    extra.push({
+      kind: 'child',
+      label: sessionLabel(row),
+      usd: sessionCost(row),
+      childId: row.id,
+      profile: row.profile || '',
+      source: 'recorded',
+      transcriptUsd: null,
+      depth
+    })
+  }
+
+  for (const sa of a.subagents || []) {
+    const id = sa.childId || ''
+    if (id && covered.has(id)) {
+      const line = extra.find(l => l.childId === id)
+      if (line && sa.costUsd !== null && line.usd !== null && Math.abs(sa.costUsd - line.usd) > 1e-6) {
+        line.transcriptUsd = sa.costUsd
+      }
+      continue
+    }
+    if (sa.costUsd !== null) {
+      if (id) covered.add(id)
+      extra.push({
+        kind: 'child',
+        label: sa.goal || sa.model || 'subagent',
+        usd: sa.costUsd,
+        childId: id,
+        profile: s.profile || '',
+        source: 'transcript',
+        transcriptUsd: null,
+        depth: 1
+      })
+    } else {
+      extra.push({
+        kind: 'unpriced',
+        label: sa.goal || sa.model || 'subagent',
+        usd: null,
+        childId: id,
+        profile: s.profile || '',
+        source: 'transcript',
+        transcriptUsd: null,
+        depth: 1
+      })
+    }
+  }
+
+  for (const f of (a.files || []).filter(x => x.artifact && x.path)) {
+    extra.push({
+      kind: 'artifact',
+      label: f.path.split(/[\\/]/).pop() || f.path,
+      usd: null,
+      path: f.path,
+      childId: '',
+      profile: '',
+      source: '',
+      transcriptUsd: null,
+      depth: 0
+    })
+  }
+
+  const childSum = extra.filter(l => l.kind === 'child' && l.usd !== null).reduce((acc, l) => acc + l.usd, 0)
+  const unpriced = extra.filter(l => l.kind === 'unpriced').length
+  const ownRecorded = sessionCost(s)
+  const included = ownRecorded !== null && childSum > 0 && ownRecorded + 1e-9 >= childSum
+  const ownUsd = included ? Math.max(0, ownRecorded - childSum) : ownRecorded
+  const totalUsd = included
+    ? ownRecorded
+    : ownRecorded !== null
+      ? ownRecorded + childSum
+      : childSum > 0
+        ? childSum
+        : null
+  const hasTree = extra.some(l => l.kind === 'child' || l.kind === 'unpriced')
+
+  return {
+    ownUsd,
+    ownRecorded,
+    totalUsd,
+    floor: unpriced > 0,
+    included,
+    hasTree,
+    unpriced,
+    lines: [
+      { kind: 'own', label: '', usd: ownUsd, childId: s.id || '', profile: s.profile || '', source: 'recorded', transcriptUsd: null, depth: 0 },
+      ...extra
+    ]
+  }
+}
+
+function liveTrueCost({ ownUsd, subagents, estimateChild }) {
+  let extra = 0
+  let estimated = false
+  let count = 0
+  for (const sa of subagents || []) {
+    count += 1
+    const est = typeof estimateChild === 'function' ? estimateChild(sa) : null
+    if (est && typeof est.usd === 'number' && Number.isFinite(est.usd)) {
+      extra += est.usd
+      estimated = true
+    }
+  }
+  const own = typeof ownUsd === 'number' && Number.isFinite(ownUsd) ? ownUsd : 0
+  return { usd: own + extra, estimated, count }
 }
 
 // sort helper: worst first by failed count, then suspected when asked
@@ -1890,6 +2101,17 @@ const EN = {
   tools: 'tools',
   cacheHit: 'cache hit',
   spend: 'spend',
+  trueCost: 'true cost',
+  trueCostFloor: 'at least',
+  trueCostTip: 'own spend plus subagents. Newer Hermes already folds children into the session total; this splits that bill.',
+  trueCostAdded: 'session row was missing child spend; those dollars are added here',
+  receipt: 'receipt',
+  ownWork: 'this session',
+  unpricedChild: 'not priced',
+  openFile: 'reveal in file manager',
+  pathCopied: 'path copied',
+  pathUnavailable: 'could not open or copy that path',
+  childNotListed: 'Child session is not in the current list. Open it in chat if the desktop supports it.',
   msgs: 'msgs',
   duration: 'duration',
   started: 'started',
@@ -2103,6 +2325,45 @@ function Muted({ children, style }) {
   return jsx('div', { style: { color: text.tertiary, fontSize: '0.75rem', ...style }, children })
 }
 
+function canRevealPath() {
+  return !!(os && (typeof os.revealPath === 'function' || typeof os.writeClipboard === 'function'))
+}
+
+function revealOrCopy(path, t) {
+  const go = async () => {
+    if (os && typeof os.revealPath === 'function') {
+      try {
+        const ok = await os.revealPath(path)
+        if (ok) return
+      } catch {
+        // Fall through to clipboard.
+      }
+    }
+    const copied = os && typeof os.writeClipboard === 'function' ? await os.writeClipboard(path) : false
+    host.notify({ kind: copied ? 'info' : 'error', message: copied ? t('pathCopied') : t('pathUnavailable') })
+  }
+  void go()
+}
+
+function openChildSession(id, profile, t) {
+  if (!id) return
+  const row = ($knownRows.get() || []).find(r => r.id === id)
+  if (row) $selected.set(row)
+  if (capabilities.openSession) {
+    void host.openSession(id, profile && profile !== activeProfileName() ? { profile } : undefined)
+    return
+  }
+  if (!row) host.notify({ kind: 'info', message: t('childNotListed') })
+}
+
+function estimateLiveChild(sa, fallbackModel) {
+  const tokens = sa && sa.tokens ? sa.tokens : {}
+  const input = num(tokens.input)
+  const output = num(tokens.output)
+  if (!input && !output) return null
+  return liveEstimate({ input, output, total: input + output }, sa.model || fallbackModel || '')
+}
+
 // ---------------------------------------------------------------------------
 // ui: about tab
 // ---------------------------------------------------------------------------
@@ -2214,8 +2475,10 @@ function useProfiles() {
   })
 }
 
-function SessionRow({ session, selected, onSelect, scan }) {
+function SessionRow({ session, selected, onSelect, scan, treeCost, branched }) {
   const cost = sessionCost(session)
+  const display = treeCost !== null && treeCost !== undefined ? treeCost : cost
+  const mark = !!(branched || (display !== null && cost !== null && Math.abs(display - cost) > 1e-9))
   const rate = cacheHitRate(session.tokens)
   const failedBadge = scan && scan.failed ? jsx('span', { style: { color: text.red, fontSize: '0.6875rem' }, children: `${scan.failed} failed` }) : null
   const suspectedBadge = scan && scan.suspected ? jsx('span', { style: { color: 'var(--ui-yellow)', fontSize: '0.6875rem' }, children: `${scan.suspected} suspected` }) : null
@@ -2242,7 +2505,16 @@ function SessionRow({ session, selected, onSelect, scan }) {
             style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.8rem', color: text.primary },
             children: sessionLabel(session)
           }),
-          jsx('span', { style: { fontFamily: mono, fontSize: '0.7rem', color: text.secondary }, children: session.hasUsage ? fmtUsd(cost) : '' })
+          session.hasUsage
+            ? jsxs('span', {
+                style: { fontFamily: mono, fontSize: '0.7rem', color: text.secondary, display: 'inline-flex', gap: 4, alignItems: 'baseline', flexShrink: 0 },
+                title: mark ? EN.trueCostTip : undefined,
+                children: [
+                  mark ? jsx('span', { style: { color: text.accent }, children: '\u21b3' }) : null,
+                  fmtUsd(display)
+                ]
+              })
+            : null
         ]
       }),
       jsxs('div', {
@@ -2333,10 +2605,12 @@ function SessionList({ t, onSelect, selectedId }) {
   const q = useSessions(pages, withArchived ? 'include' : 'exclude')
   const mode = useValue($mode)
   const scans = useValue($scans)
+  const known = useValue($knownRows)
   const search = useContentSearch(query, contentMode && mode === 'full')
+  const index = useMemo(() => childIndex(known.length ? known : (q.data ? q.data.rows : [])), [known, q.data])
 
   const filtered = q.data ? filterSessions(q.data.rows, { query: contentMode ? '' : query, source }) : []
-  const rows = sort === 'worst' ? sortWorst(filtered, scans, includeSuspected) : sortSessions(filtered, sort)
+  const rows = sort === 'worst' ? sortWorst(filtered, scans, includeSuspected) : sortSessions(filtered, sort, index)
   const sources = q.data ? distinct(q.data.rows, 'source') : []
   const fromRpc = q.data && q.data.source === 'rpc'
   const scannedCount = q.data ? q.data.rows.filter(r => scans[scanKey(r)]).length : 0
@@ -2469,7 +2743,20 @@ function SessionList({ t, onSelect, selectedId }) {
             ? jsx(Muted, { style: { padding: 10 }, children: t('noSessions') })
             : jsxs('div', {
                 children: [
-                  ...rows.map(s => jsx(SessionRow, { session: s, selected: s.id === selectedId, onSelect, scan: scans[scanKey(s)] }, s.id)),
+                  ...rows.map(s =>
+                    jsx(
+                      SessionRow,
+                      {
+                        session: s,
+                        selected: s.id === selectedId,
+                        onSelect,
+                        scan: scans[scanKey(s)],
+                        treeCost: listTreeCost({ session: s, index }),
+                        branched: !!(index.get(s.id) || []).length
+                      },
+                      s.id
+                    )
+                  ),
                   canLoadMore
                     ? jsx('div', { style: { padding: 8, textAlign: 'center' }, children: jsx(SmallButton, { onClick: () => setPages(p => p + 1), children: t('loadMore') }) })
                     : null
@@ -2483,6 +2770,11 @@ function SessionList({ t, onSelect, selectedId }) {
 function SessionSummary({ t, session }) {
   const cost = sessionCost(session)
   const rate = cacheHitRate(session.tokens)
+  const known = useValue($knownRows)
+  const index = useMemo(() => childIndex(known), [known])
+  const tree = listTreeCost({ session, index })
+  const branched = !!(index.get(session.id) || []).length
+  const showTree = branched || (tree !== null && cost !== null && Math.abs(tree - cost) > 1e-9)
   const stat = (label, value) =>
     jsxs('div', {
       style: { minWidth: 90 },
@@ -2529,6 +2821,7 @@ function SessionSummary({ t, session }) {
             style: { display: 'flex', gap: 18, flexWrap: 'wrap' },
             children: [
               stat(t('spend'), `${fmtUsd(cost)}${session.cost.status ? ` (${session.cost.status})` : ''}`),
+              showTree ? stat(t('trueCost'), fmtUsd(tree)) : null,
               stat('input', fmtCount(session.tokens.input)),
               stat('cache read', fmtCount(session.tokens.cacheRead)),
               stat('cache write', fmtCount(session.tokens.cacheWrite)),
@@ -2709,6 +3002,35 @@ function FailuresPane({ t, analysis }) {
   return jsx('div', { children: analysis.failures.map((c, i) => jsx(FailureRow, { t, call: c }, `${c.id}-${i}`)) })
 }
 
+function FilePathLabel({ t, path, artifact }) {
+  const clickable = canRevealPath()
+  const inner = jsx('span', {
+    style: { fontFamily: mono, color: text.primary, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', direction: 'rtl', textAlign: 'left' },
+    children: path
+  })
+  if (!clickable) return inner
+  return jsx('button', {
+    type: 'button',
+    title: t('openFile'),
+    onClick: e => {
+      e.stopPropagation()
+      revealOrCopy(path, t)
+    },
+    style: {
+      font: 'inherit',
+      border: 'none',
+      background: 'transparent',
+      padding: 0,
+      cursor: 'pointer',
+      flex: 1,
+      minWidth: 0,
+      display: 'flex',
+      color: artifact ? text.accent : text.primary
+    },
+    children: inner
+  })
+}
+
 function FilesPane({ t, analysis }) {
   if (!analysis.files.length) return jsx(Muted, { children: t('noFiles') })
   return jsx('div', {
@@ -2716,8 +3038,8 @@ function FilesPane({ t, analysis }) {
       jsxs('div', {
         style: { display: 'flex', gap: 10, alignItems: 'baseline', padding: '2px 0', fontSize: '0.75rem' },
         children: [
-          jsx(Codicon, { name: f.writes ? 'file-code' : 'file', size: 12, style: { color: f.writes ? text.accent : text.tertiary } }),
-          jsx('span', { style: { fontFamily: mono, color: text.primary, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', direction: 'rtl', textAlign: 'left' }, children: f.path }),
+          jsx(Codicon, { name: f.writes || f.artifact ? 'file-code' : 'file', size: 12, style: { color: f.writes || f.artifact ? text.accent : text.tertiary } }),
+          jsx(FilePathLabel, { t, path: f.path, artifact: !!f.artifact }),
           f.writes ? jsx('span', { style: { color: text.secondary }, children: `${f.writes} ${t('writes')}` }) : null,
           f.reads ? jsx('span', { style: { color: text.tertiary }, children: `${f.reads} ${t('reads')}` }) : null
         ]
@@ -2726,37 +3048,115 @@ function FilesPane({ t, analysis }) {
   })
 }
 
-function SubagentsPane({ t, analysis }) {
+function SubagentsPane({ t, analysis, session }) {
   if (!analysis.subagents.length) return jsx(Muted, { children: t('noSubagents') })
   return jsx('div', {
-    children: analysis.subagents.map((sa, i) =>
+    children: analysis.subagents.map((sa, i) => {
+      const openable = !!(sa.childId && (capabilities.openSession || ($knownRows.get() || []).some(r => r.id === sa.childId)))
+      const body = [
+        jsxs('div', {
+          style: { display: 'flex', gap: 8, alignItems: 'baseline', fontSize: '0.75rem' },
+          children: [
+            jsx(Codicon, { name: sa.status === 'completed' ? 'check' : 'error', size: 12, style: { color: sa.status === 'completed' ? text.green : text.red } }),
+            jsx('span', { style: { fontFamily: mono, color: text.primary }, children: sa.model || 'subagent' }),
+            jsx('span', { style: { color: text.tertiary }, children: sa.status }),
+            jsx('span', { style: { color: text.tertiary }, children: fmtDuration(sa.durationSeconds) }),
+            sa.apiCalls ? jsx('span', { style: { color: text.tertiary }, children: `${sa.apiCalls} calls` }) : null,
+            sa.tokens.input ? jsx('span', { style: { color: text.tertiary }, children: `${fmtCount(sa.tokens.input)} in / ${fmtCount(sa.tokens.output)} out` }) : null,
+            sa.costUsd !== null ? jsx('span', { style: { fontFamily: mono, color: text.secondary }, children: fmtUsd(sa.costUsd) }) : null
+          ]
+        }),
+        sa.goal ? jsx('div', { style: { fontSize: '0.75rem', color: text.secondary, marginTop: 2 }, children: sa.goal.slice(0, 200) }) : null,
+        sa.summary ? jsx('div', { style: { fontSize: '0.6875rem', color: text.tertiary, marginTop: 2, whiteSpace: 'pre-wrap' }, children: sa.summary }) : null,
+        sa.error ? jsx('div', { style: { fontSize: '0.6875rem', color: text.red, marginTop: 2 }, children: sa.error }) : null
+      ]
+      return openable
+        ? jsxs('button', {
+            type: 'button',
+            onClick: () => openChildSession(sa.childId, (session && session.profile) || '', t),
+            title: sa.childId,
+            style: {
+              display: 'block',
+              width: '100%',
+              textAlign: 'left',
+              font: 'inherit',
+              padding: '4px 0',
+              border: 'none',
+              borderBottom: '1px solid var(--ui-stroke-tertiary)',
+              background: 'transparent',
+              cursor: 'pointer'
+            },
+            children: body
+          }, i)
+        : jsxs('div', { style: { padding: '4px 0', borderBottom: '1px solid var(--ui-stroke-tertiary)' }, children: body }, i)
+    })
+  })
+}
+
+function ReceiptLine({ t, line, session }) {
+  const indent = 8 + num(line.depth) * 12
+  const usd = line.kind === 'unpriced' ? t('unpricedChild') : line.kind === 'artifact' ? '' : fmtUsd(line.usd)
+  const label = line.kind === 'own' ? t('ownWork') : line.label
+  const tip = line.transcriptUsd !== null && line.transcriptUsd !== undefined
+    ? `transcript ${fmtUsd(line.transcriptUsd)}`
+    : line.kind === 'artifact'
+      ? t('openFile')
+      : line.childId || undefined
+  const clickChild = line.kind === 'child' && line.childId
+  const clickFile = line.kind === 'artifact' && line.path && canRevealPath()
+  const inner = jsxs('div', {
+    style: { display: 'flex', gap: 10, alignItems: 'baseline', padding: '2px 0', fontSize: '0.75rem', paddingLeft: indent },
+    children: [
+      jsx('span', { style: { color: text.tertiary, minWidth: 64 }, children: line.kind === 'own' ? t('ownWork') : line.kind === 'artifact' ? t('openFile') : line.kind === 'unpriced' ? t('unpricedChild') : '\u21b3' }),
+      jsx('span', { style: { color: text.primary, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: label }),
+      usd ? jsx('span', { style: { fontFamily: mono, color: text.secondary, flexShrink: 0 }, children: usd }) : null
+    ]
+  })
+  if (clickChild) {
+    return jsx('button', {
+      type: 'button',
+      title: tip,
+      onClick: () => openChildSession(line.childId, line.profile || (session && session.profile) || '', t),
+      style: { display: 'block', width: '100%', textAlign: 'left', font: 'inherit', border: 'none', background: 'transparent', cursor: 'pointer', padding: 0 },
+      children: inner
+    })
+  }
+  if (clickFile) {
+    return jsx('button', {
+      type: 'button',
+      title: tip,
+      onClick: () => revealOrCopy(line.path, t),
+      style: { display: 'block', width: '100%', textAlign: 'left', font: 'inherit', border: 'none', background: 'transparent', cursor: 'pointer', padding: 0 },
+      children: inner
+    })
+  }
+  return jsx('div', { title: tip, children: inner })
+}
+
+function ReceiptPane({ t, session, receipt }) {
+  if (!receipt || !receipt.hasTree) return null
+  const total = `${receipt.floor ? `${t('trueCostFloor')} ` : ''}${fmtUsd(receipt.totalUsd)}`
+  return jsxs('div', {
+    style: { marginBottom: 12, padding: '8px 0', borderBottom: '1px solid var(--ui-stroke-tertiary)' },
+    children: [
       jsxs('div', {
-        style: { padding: '4px 0', borderBottom: '1px solid var(--ui-stroke-tertiary)' },
+        style: { display: 'flex', gap: 10, alignItems: 'baseline', marginBottom: 4 },
         children: [
-          jsxs('div', {
-            style: { display: 'flex', gap: 8, alignItems: 'baseline', fontSize: '0.75rem' },
-            children: [
-              jsx(Codicon, { name: sa.status === 'completed' ? 'check' : 'error', size: 12, style: { color: sa.status === 'completed' ? text.green : text.red } }),
-              jsx('span', { style: { fontFamily: mono, color: text.primary }, children: sa.model || 'subagent' }),
-              jsx('span', { style: { color: text.tertiary }, children: sa.status }),
-              jsx('span', { style: { color: text.tertiary }, children: fmtDuration(sa.durationSeconds) }),
-              sa.apiCalls ? jsx('span', { style: { color: text.tertiary }, children: `${sa.apiCalls} calls` }) : null,
-              sa.tokens.input ? jsx('span', { style: { color: text.tertiary }, children: `${fmtCount(sa.tokens.input)} in / ${fmtCount(sa.tokens.output)} out` }) : null,
-              sa.costUsd !== null ? jsx('span', { style: { fontFamily: mono, color: text.secondary }, children: fmtUsd(sa.costUsd) }) : null
-            ]
-          }),
-          sa.goal ? jsx('div', { style: { fontSize: '0.75rem', color: text.secondary, marginTop: 2 }, children: sa.goal.slice(0, 200) }) : null,
-          sa.summary ? jsx('div', { style: { fontSize: '0.6875rem', color: text.tertiary, marginTop: 2, whiteSpace: 'pre-wrap' }, children: sa.summary }) : null,
-          sa.error ? jsx('div', { style: { fontSize: '0.6875rem', color: text.red, marginTop: 2 }, children: sa.error }) : null
+          jsx('div', { style: { fontSize: '0.6875rem', color: text.tertiary }, children: t('receipt') }),
+          jsx('div', { style: { fontFamily: mono, fontSize: '0.8rem', color: text.primary }, children: total }),
+          jsx('div', { style: { fontSize: '0.6875rem', color: text.tertiary }, children: receipt.included ? t('trueCostTip') : t('trueCostAdded') })
         ]
-      }, i)
-    )
+      }),
+      receipt.lines.filter(l => l.kind !== 'artifact' || l.path).map((line, i) => jsx(ReceiptLine, { t, line, session }, `${line.kind}-${line.childId || line.path || i}`))
+    ]
   })
 }
 
 function SessionDetail({ t, session }) {
   const { analysis, isLoading, error, mode, data: page } = useAnalysis(session)
+  const known = useValue($knownRows)
   const [sub, setSub] = useState('tools')
+  const receipt = useMemo(() => (analysis ? trueCost({ session, analysis, rows: known }) : null), [session, analysis, known])
 
   if (mode !== 'full') return jsx(Muted, { style: { marginTop: 16 }, children: t('detailUnavailable') })
   if (error) return jsx(Muted, { style: { marginTop: 16, color: text.red }, children: `${error.kind || 'error'}: ${error.message}` })
@@ -2776,7 +3176,7 @@ function SessionDetail({ t, session }) {
       : sub === 'files'
         ? jsx(FilesPane, { t, analysis })
         : sub === 'subagents'
-          ? jsx(SubagentsPane, { t, analysis })
+          ? jsx(SubagentsPane, { t, analysis, session })
           : sub === 'timeline'
             ? jsx(TimelinePane, { t, storedId: session.id })
             : sub === 'analysis'
@@ -2786,6 +3186,7 @@ function SessionDetail({ t, session }) {
   return jsxs('div', {
     style: { marginTop: 16 },
     children: [
+      jsx(ReceiptPane, { t, session, receipt }),
       analysis.about
         ? jsxs('div', {
             style: { marginBottom: 8 },
@@ -2832,15 +3233,22 @@ function TimelinePane({ t, storedId }) {
   return jsx('div', { children: rec.tools.slice().reverse().map(tool => jsx(ToolLine, { tool }, tool.toolId)) })
 }
 
-function LiveSubagentRow({ sa }) {
+function LiveSubagentRow({ sa, t }) {
   const done = SUBAGENT_DONE.has(sa.status)
-  return jsxs('div', {
-    style: { display: 'flex', gap: 6, alignItems: 'baseline', fontSize: '0.6875rem', padding: '1px 0' },
-    children: [
-      jsx('span', { style: { color: !done ? text.accent : sa.status === 'completed' ? text.green : text.red }, children: done ? (sa.status === 'completed' ? '✓' : '✗') : '●' }),
-      jsx('span', { style: { color: text.primary, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: sa.goal || sa.model || 'subagent' }),
-      jsx('span', { style: { color: text.tertiary }, children: done ? fmtDuration(sa.durationS || 0) : sa.currentTool || sa.status })
-    ]
+  const openable = !!(sa.id && capabilities.openSession)
+  const body = [
+    jsx('span', { style: { color: !done ? text.accent : sa.status === 'completed' ? text.green : text.red }, children: done ? (sa.status === 'completed' ? '✓' : '✗') : '●' }),
+    jsx('span', { style: { color: text.primary, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: sa.goal || sa.model || 'subagent' }),
+    jsx('span', { style: { color: text.tertiary }, children: done ? fmtDuration(sa.durationS || 0) : sa.currentTool || sa.status })
+  ]
+  const style = { display: 'flex', gap: 6, alignItems: 'baseline', fontSize: '0.6875rem', padding: '1px 0', width: '100%', textAlign: 'left', font: 'inherit', border: 'none', background: 'transparent' }
+  if (!openable) return jsxs('div', { style, children: body })
+  return jsxs('button', {
+    type: 'button',
+    title: sa.id,
+    onClick: () => openChildSession(sa.id, '', t),
+    style: { ...style, cursor: 'pointer' },
+    children: body
   })
 }
 
@@ -2864,8 +3272,17 @@ function LiveCard() {
   const est = liveEstimate(usage, liveModel)
   const stored = rows.find(r => r.id === (storedId || (rec && rec.storedId))) || null
   const storedCost = stored ? sessionCost(stored) : null
-  const spentNow = storedCost !== null ? storedCost : est ? est.usd : 0
-  const sessionBudget = budgetState(budgets, null, { cost: { actual: spentNow, estimated: spentNow } }).session
+  const childLive = liveTrueCost({
+    ownUsd: 0,
+    subagents: rec ? rec.subagents : [],
+    estimateChild: sa => estimateLiveChild(sa, liveModel)
+  })
+  const index = childIndex(rows)
+  const storedTree = stored ? listTreeCost({ session: stored, index }) : null
+  const ownLive = storedCost !== null && !busy ? storedCost : est ? est.usd : storedCost || 0
+  const spentNow = busy || storedCost === null ? ownLive + childLive.usd : storedTree !== null ? storedTree : storedCost
+  const spentEstimated = !!(busy || storedCost === null) && (est || childLive.estimated)
+  const sessionBudget = budgetState(budgets, null, { cost: { actual: spentNow, estimated: spentNow } }, spentNow).session
   const tools = rec ? rec.tools : []
   const failed = tools.filter(x => x.verdict === 'failed').length
   const lastTool = tools.length ? tools[tools.length - 1] : null
@@ -2896,8 +3313,9 @@ function LiveCard() {
       usage && num(usage.compressions) ? line(t('compressions'), String(usage.compressions)) : null,
       jsx(Tip, {
         label: est ? est.source : t('liveNoRate'),
-        children: line(t('liveEstimate'), est ? `${fmtUsd(est.usd)} est` : t('liveNoRate'))
+        children: line(t('liveEstimate'), spentEstimated ? `${fmtUsd(spentNow)} est` : est ? `${fmtUsd(est.usd)} est` : t('liveNoRate'))
       }),
+      childLive.count ? line(t('trueCost'), `${fmtUsd(spentNow)}${spentEstimated ? ' est' : ''}`) : null,
       storedCost !== null ? line(t('spend'), `${fmtUsd(storedCost)} (${stored.cost.status || 'stored'})`) : null,
       sessionBudget.limit !== null ? line(t('budgetSessionLabel'), `${fmtUsd(sessionBudget.spent)} / ${fmtUsd(sessionBudget.limit)}`, sessionBudget.level === 'over' || sessionBudget.level === 'near' ? 'bad' : undefined) : null,
       line(t('liveTools'), `${tools.length}${failed ? ` (${failed} ${t('failed')})` : ''}`, failed ? 'bad' : undefined),
@@ -2906,7 +3324,7 @@ function LiveCard() {
         ? jsxs('div', {
             children: [
               jsx('div', { style: { fontSize: '0.6875rem', color: text.tertiary, marginTop: 4 }, children: `${t('liveSubagents')} (${running.length} running)` }),
-              ...rec.subagents.slice(-6).map(sa => jsx(LiveSubagentRow, { sa }, sa.key))
+              ...rec.subagents.slice(-6).map(sa => jsx(LiveSubagentRow, { sa, t }, sa.key))
             ]
           })
         : null,
@@ -3194,13 +3612,14 @@ function checkSessionBudgets(rows) {
   const t = key => EN[key] || key
   const fired = storedScoped('sessionAlertsFired', {})
   const since = Date.now() / 1000 - SESSION_ALERT_WINDOW_S
+  const index = childIndex(rows)
   let changed = false
   for (const row of rows || []) {
     if (!row || !row.hasUsage || num(row.lastActive) < since) continue
     const profile = row.profile || activeProfileName()
     const budgets = storedForProfile('budgets', profile, $budgets.get())
     if (!(num(budgets.session) > 0)) continue
-    const st = budgetState(budgets, null, row).session
+    const st = budgetState(budgets, null, row, listTreeCost({ session: row, index })).session
     if (st.level !== 'over' && st.level !== 'near') continue
     const key = `${profile}:${row.id}:${st.level}`
     if (fired[key]) continue
@@ -3850,15 +4269,30 @@ function Chip() {
   const model = useValue(host.state.model || $absent)
   const all = useValue($live)
   const rows = useValue($knownRows)
+  const busyMap = useValue(host.state.busyBySession || $absent)
   useValue($optionRates)
 
   const rec = rid ? all[rid] : null
   const usage = (rec && rec.usage) || focusedUsage || null
-  const est = rid ? liveEstimate(usage, (rec && rec.model) || model) : null
+  const liveModel = (rec && rec.model) || model
+  const est = rid ? liveEstimate(usage, liveModel) : null
   const stored = rows.find(r => r.id === (storedId || (rec && rec.storedId))) || null
+  const busy = !!(rid && busyMap && busyMap[rid]) || !!(rec && rec.busy)
+  const childLive = liveTrueCost({
+    ownUsd: 0,
+    subagents: rec ? rec.subagents : [],
+    estimateChild: sa => estimateLiveChild(sa, liveModel)
+  })
+  const storedTree = stored ? listTreeCost({ session: stored, index: childIndex(rows) }) : null
+  const chipUsd = childLive.count
+    ? (!busy && storedTree !== null ? storedTree : (est ? est.usd : 0) + childLive.usd)
+    : est
+      ? est.usd
+      : null
   const rate = stored ? cacheHitRate(stored.tokens) : null
   const parts = []
-  if (est) parts.push(`${fmtUsd(est.usd)} est`)
+  const showEst = childLive.count ? busy || storedTree === null : !!est
+  if (chipUsd !== null) parts.push(`${fmtUsd(chipUsd)}${showEst ? ' est' : ''}`)
   if (rate !== null) parts.push(`${fmtPct(rate)} cache`)
   const label = parts.length ? parts.join(' · ') : 'ledger'
 

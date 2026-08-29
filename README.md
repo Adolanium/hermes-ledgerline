@@ -12,7 +12,7 @@
   One plugin file for Hermes Desktop. No backend, no restart. The same file
   works on a local gateway and on a remote one.
 
-  <sub>POWERED BY <a href="https://github.com/NousResearch/hermes-agent">HERMES AGENT</a> &nbsp;·&nbsp; COMMUNITY PLUGIN &nbsp;·&nbsp; VERSION 0.1.2</sub>
+  <sub>POWERED BY <a href="https://github.com/NousResearch/hermes-agent">HERMES AGENT</a> &nbsp;·&nbsp; COMMUNITY PLUGIN &nbsp;·&nbsp; VERSION 0.1.3</sub>
 
   <br /><br />
 
@@ -36,7 +36,7 @@ Most cost views stop at a total. Ledgerline gives each number a next step withou
 | | |
 | --- | --- |
 | **See**<br />Spend today, this week, this month, and where the month is heading. Per day, per model, and per helper task (compression, memory review, title generation). | **Split**<br />Each model row breaks tokens into input, cache reads, cache writes, and output. On a cached provider, that split is the bill. |
-| **Watch**<br />A ledger pane and a statusbar chip follow the live turn: tokens, calls, context fill, tools, subagents, and a running cost at list price. | **Explain**<br />Pick a session and ask. A quick explain is one small model call. A full audit opens a session. A background audit runs headless. |
+| **Watch**<br />A ledger pane and a statusbar chip follow the live turn: tokens, calls, context fill, tools, subagents, and a running cost at list price. Child spend is estimated while they run. | **Explain**<br />Pick a session and ask. A quick explain is one small model call. A full audit opens a session. A background audit runs headless. |
 
 The pane stays quiet until you ask it to do more. AI actions are explicit and use your configured Hermes providers.
 
@@ -46,6 +46,7 @@ Ledgerline handles the small decisions that make a cost view worth opening again
 
 - Monthly and per-session budgets warn you at 80% and 100%.
 - Recommendations name the dollar figure: low cache hit rates, unknown pricing, helper tasks eating a big share, a cheaper model for the same tokens.
+- True cost for a task: the parent session plus its subagents, shown as a receipt. Newer Hermes already folds children into the session total; the receipt splits that bill. Older gateways that omit child spend get those dollars added. Costliest sort uses this number. Child rows and file paths are clickable when the desktop can open them.
 - Title and full-text search over sessions. Sort by recent, cost, tokens, tools, or worst (failed tool calls).
 - Active profile, any single profile, or all of them merged. Budgets, dismissed tips, scans, and saved answers stay per profile.
 - Budget alerts go out through any messaging platform the gateway already has.
@@ -120,6 +121,8 @@ It is checked by hand on a local gateway (Hermes 0.20.4) and on a remote gateway
 - Saved analysis answers cap at 50 per profile scope.
 - Cache writes per model come from the session list and show as a floor when child sessions are missing from it.
 - What-if lines skip free models and need at least $0.05 of recorded spend on the row.
+- True cost on the list uses known session rows only. Transcript-only children show up after you open the parent. Month totals stay on each row's own spend so children are not counted twice.
+- Clicking a file path reveals it in the OS file manager when that door exists, otherwise the path is copied.
 
 Ledgerline works around a few upstream gaps today. If Hermes adds the fields, the plugin will feature-detect them.
 
