@@ -33,7 +33,7 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 const PLUGIN_ID = 'ledgerline'
 const PLUGIN_NAME = 'Ledgerline'
 const ROUTE = '/ledgerline'
-const VERSION = '0.1.4'
+const VERSION = '0.1.5'
 const PAGE_SIZE = 100
 const KNOWN_ROWS_CAP = 1000
 // Enough daily rows to cover the 1st of a 31-day month on its 31st.
@@ -107,6 +107,13 @@ function describeCapabilities({ sdk, host, bridge }) {
 // ---------------------------------------------------------------------------
 
 function createDataLayer({ host, bridge }) {
+  function holdReadScope() {
+    const identity = () => `${host?.activeConnectionId?.() || 'local'}:${host?.state?.profile?.get?.() || ''}`
+    const owner = identity()
+    return () => {
+      if (owner !== identity()) throw new LedgerlineError('rest', 'scope-changed', 'Profile or connection changed. Refresh this view.')
+    }
+  }
   async function rpc(method, params = {}, route = null) {
     const useRoute = !!(route && host && typeof host.requestProfile === 'function')
     if (!host || (useRoute ? typeof host.requestProfile !== 'function' : typeof host.request !== 'function')) {
@@ -213,6 +220,7 @@ function createDataLayer({ host, bridge }) {
   // 'all' scope the unified cross-profile route is used and rows carry
   // their profile.
   async function listSessions({ pages = 1, order = 'recent', archived = 'exclude', scope } = {}) {
+    const checkScope = holdReadScope()
     const sc = scope || { kind: 'active', profile: '' }
     try {
       const results = await Promise.all(
@@ -229,7 +237,9 @@ function createDataLayer({ host, bridge }) {
       return { rows, total, source: 'rest' }
     } catch (error) {
       if (!(error instanceof LedgerlineError) || error.kind !== 'rest') throw error
+      checkScope()
       const r = await rpc('session.list', { limit: pages * PAGE_SIZE, ...(sc.kind === 'profile' && sc.profile ? { profile: sc.profile } : {}) })
+      checkScope()
       const rows = (r && Array.isArray(r.sessions) ? r.sessions : []).map(normalizeRpcSession)
       // session.list has no cross-profile form: under the all-profiles
       // scope this is the active profile only, and the caller must say so.
@@ -254,13 +264,16 @@ function createDataLayer({ host, bridge }) {
   // Every message row of a session in order, walking REST pages of
   // MESSAGE_PAGE rows up to MESSAGE_PAGES pages. Returns { messages, truncated }.
   async function getMessages(id, scope) {
+    const checkScope = holdReadScope()
     const { query, opts } = scopeRest(scope)
     const messages = []
     for (let page = 0; page < MESSAGE_PAGES; page++) {
+      checkScope()
       const r = await coreRest(
         `/api/sessions/${encodeURIComponent(id)}/messages?limit=${MESSAGE_PAGE}&offset=${page * MESSAGE_PAGE}&order=oldest${query}`,
         { timeoutMs: 20000, ...opts }
       )
+      checkScope()
       const rows = r && Array.isArray(r.messages) ? r.messages : []
       messages.push(...rows)
       if (rows.length < MESSAGE_PAGE) return { messages, truncated: false }
@@ -386,6 +399,9 @@ function createDataLayer({ host, bridge }) {
       return normalizeCronJob(r && r.job ? r.job : r)
     } catch (error) {
       if (!(error instanceof LedgerlineError) || error.kind !== 'rest') throw error
+      if (!['bridge-missing', 'not-found'].includes(error.code)) {
+        throw new LedgerlineError('rest', 'write-uncertain', 'Report creation was not confirmed. Refresh scheduled jobs before trying again.', error)
+      }
       const r = await cli(['cron', 'create', schedule, prompt, '--name', name, '--deliver', deliver], { timeout: 60 })
       if (r.code !== 0) throw new LedgerlineError('cli', `exit-${r.code}`, (r.output || '').slice(0, 300) || 'hermes cron create failed')
       return { name, schedule, deliver, created: true }
@@ -432,7 +448,7 @@ function createDataLayer({ host, bridge }) {
     return (r && r.text) || ''
   }
 
-  async function fullAudit(session, digest, route) {
+  async function fullAudit(session, digest, route, onCreated = () => {}, check = async () => {}) {
     const created = await rpc(
       'session.create',
       {
@@ -443,8 +459,11 @@ function createDataLayer({ host, bridge }) {
     )
     const runtimeId = created && created.session_id
     if (!runtimeId) throw new LedgerlineError('rpc', 'no-session', 'session.create returned no session id')
+    const ref = { runtimeId, storedId: (created && created.stored_session_id) || '' }
+    onCreated(ref)
+    await check()
     await rpc('prompt.submit', { session_id: runtimeId, text: auditPrompt(session.id) }, route)
-    return { runtimeId, storedId: (created && created.stored_session_id) || '' }
+    return ref
   }
 
   async function backgroundAudit(session, digest, liveId, route) {
@@ -704,7 +723,7 @@ function sortSessions(rows, sort = 'recent', index) {
   const copy = rows.slice()
   const tree = index || (sort === 'costliest' ? childIndex(rows) : null)
   const by = fn => copy.sort((a, b) => fn(b) - fn(a) || b.lastActive - a.lastActive)
-  if (sort === 'costliest') return by(s => listTreeCost({ session: s, index: tree }) || 0)
+  if (sort === 'costliest') return by(s => listTreeCost({ session: s, index: tree }) ?? sessionCost(s) ?? 0)
   if (sort === 'tokens') return by(s => tokenTotal(s.tokens))
   if (sort === 'tools') return by(s => s.toolCalls)
   return by(s => s.lastActive)
@@ -1104,7 +1123,11 @@ function reduceLiveEvent(state, event, now = Date.now()) {
       if (p.usage && typeof p.usage === 'object') next.usage = { ...p.usage }
       next.lastComplete = { at: now, status: p.status || 'complete', error: p.error || '' }
       // A turn that ends closes any tool still marked open.
-      next.tools = prev.tools.map(t => (t.endedAt ? t : { ...t, endedAt: now, verdict: 'ok' }))
+      next.tools = prev.tools.map(t => (t.endedAt !== null ? t : {
+        ...t, endedAt: now,
+        verdict: p.error || !['complete', 'completed', 'done', 'success'].includes(p.status || 'complete') ? 'interrupted' : 'unknown',
+        error: p.error ? String(p.error) : 'No tool completion event was received.'
+      }))
       break
     case 'tool.start': {
       const tool = { toolId: p.tool_id || `${p.name}-${now}`, name: p.name || 'unknown', args: p.args || null, startedAt: now, endedAt: null, durationS: null, verdict: null, error: '', summary: '' }
@@ -1706,9 +1729,9 @@ function scanKey(session) {
 // Interface:
 //   childIndex(rows) -> Map<parentId, Session[]>
 //   listTreeCost({ session, index }) -> usd|null
-//     Recorded own cost, plus descendant costs only when the parent row
-//     looks undercounted (older gateways). Newer Hermes already folds
-//     children into the parent estimate, so we do not add them again.
+//     Combined costs require an explicit inclusive/exclusive contract.
+//     Current gateway rows provide neither, so trees return null.
+//     The optional accounting argument is the adapter seam for a future contract.
 //   trueCost({ session, analysis, rows }) -> Receipt
 //     Receipt lines: own, child (recorded|transcript), unpriced, artifact.
 //     Transcript fill-in is deduped by child session id.
@@ -1732,6 +1755,7 @@ function listDescendants(session, index, depth = 0, seen = new Set()) {
   seen.add(session.id)
   for (const child of (index && index.get(session.id)) || []) {
     if (!child || !child.id || seen.has(child.id)) continue
+    if (session.profile && child.profile && session.profile !== child.profile) continue
     out.push({ row: child, depth: depth + 1 })
     for (const nested of listDescendants(child, index, depth + 1, seen)) out.push(nested)
   }
@@ -1751,18 +1775,19 @@ function descendantSum(session, index) {
 }
 
 // True cost from the session list only. No message fetch.
-function listTreeCost({ session, index }) {
+function listTreeCost({ session, index, accounting = 'unknown' }) {
   if (!session) return null
   const own = sessionCost(session)
-  const { sum } = descendantSum(session, index || childIndex([]))
-  if (own === null && sum === 0) return null
-  if (own === null) return sum
-  if (sum === 0) return own
-  if (own + 1e-9 >= sum) return own
-  return own + sum
+  const descendants = listDescendants(session, index || childIndex([]))
+  if (!descendants.length) return own
+  if (accounting === 'inclusive') return own
+  if (accounting !== 'exclusive') return null
+  const costs = descendants.map(({ row }) => sessionCost(row))
+  if (own === null || costs.some(cost => cost === null)) return null
+  return own + costs.reduce((sum, cost) => sum + cost, 0)
 }
 
-function trueCost({ session, analysis, rows }) {
+function trueCost({ session, analysis, rows, accounting = 'unknown' }) {
   const s = session || {}
   const a = analysis || { subagents: [], files: [] }
   const index = childIndex(rows)
@@ -1835,27 +1860,35 @@ function trueCost({ session, analysis, rows }) {
   const childSum = extra.filter(l => l.kind === 'child' && l.usd !== null).reduce((acc, l) => acc + l.usd, 0)
   const unpriced = extra.filter(l => l.kind === 'unpriced').length
   const ownRecorded = sessionCost(s)
-  const included = ownRecorded !== null && childSum > 0 && ownRecorded + 1e-9 >= childSum
-  const ownUsd = included ? Math.max(0, ownRecorded - childSum) : ownRecorded
-  const totalUsd = included
-    ? ownRecorded
-    : ownRecorded !== null
-      ? ownRecorded + childSum
-      : childSum > 0
-        ? childSum
-        : null
   const hasTree = extra.some(l => l.kind === 'child' || l.kind === 'unpriced')
+  const included = accounting === 'inclusive'
+  const immediate = extra.filter(l => l.kind === 'child' && l.depth === 1)
+  const immediateSum = immediate.reduce((sum, l) => sum + (l.usd || 0), 0)
+  const ownUsd = included && hasTree
+    ? ownRecorded === null || unpriced || immediate.some(l => l.usd === null) || immediateSum > ownRecorded ? null : ownRecorded - immediateSum
+    : ownRecorded
+  const totalUsd = !hasTree || included ? ownRecorded
+    : accounting === 'exclusive' && ownRecorded !== null ? ownRecorded + childSum : null
+  // Inclusive rows at each level contain their own descendants. Split each
+  // receipt line against immediate children so grandchildren count once.
+  if (included) for (const line of extra.filter(l => l.kind === 'child' && l.source === 'recorded')) {
+    const children = (index.get(line.childId) || []).filter(row => !s.profile || !row.profile || row.profile === s.profile)
+    const costs = children.map(sessionCost)
+    const subtotal = costs.reduce((sum, cost) => sum + (cost || 0), 0)
+    line.usd = line.usd === null || costs.some(cost => cost === null) || subtotal > line.usd ? null : line.usd - subtotal
+  }
 
   return {
+    accounting: hasTree ? accounting : 'own',
     ownUsd,
     ownRecorded,
     totalUsd,
-    floor: unpriced > 0,
+    floor: unpriced > 0 || extra.some(l => l.kind === 'child' && l.usd === null),
     included,
     hasTree,
     unpriced,
     lines: [
-      { kind: 'own', label: '', usd: ownUsd, childId: s.id || '', profile: s.profile || '', source: 'recorded', transcriptUsd: null, depth: 0 },
+      { kind: 'own', label: '', usd: ownUsd, recordedOnly: accounting === 'unknown', childId: s.id || '', profile: s.profile || '', source: 'recorded', transcriptUsd: null, depth: 0 },
       ...extra
     ]
   }
@@ -2041,6 +2074,7 @@ function applyLiveEvent(event) {
     }
   }
   $live.set(merged)
+  persistAuditEvent(event, next)
 }
 
 let optionRatesInFlight = null
@@ -2129,7 +2163,8 @@ const EN = {
   spend: 'spend',
   trueCost: 'true cost',
   trueCostFloor: 'at least',
-  trueCostTip: 'own spend plus subagents. Newer Hermes already folds children into the session total; this splits that bill.',
+  trueCostTip: 'Combined cost requires a documented accounting convention from the gateway.',
+  accountingUnknown: 'Combined cost unknown: the gateway does not say whether parent costs include subagents. Recorded rows are shown separately.',
   trueCostAdded: 'session row was missing child spend; those dollars are added here',
   receipt: 'receipt',
   ownWork: 'this session',
@@ -2575,18 +2610,21 @@ function useSessions(pages, archived = 'exclude') {
   useValue($scopeChoice)
   const mode = useValue($mode)
   const key = scopeKey()
+  const readScope = currentScope()
   return useQuery({
     queryKey: [PLUGIN_ID, 'sessions', key, mode, pages, archived],
     enabled: gateway === 'open',
     staleTime: 30_000,
     refetchInterval: 60_000,
     queryFn: async () => {
-      const result = await data.listSessions({ pages, archived, scope: currentScope() })
+      if (key !== scopeKey()) throw new LedgerlineError('rest', 'scope-changed', 'Profile or connection changed. Refresh this view.')
+      const result = await data.listSessions({ pages, archived, scope: readScope })
+      if (key !== scopeKey()) return result
       // Several lists feed this (sessions tab, overview, reports) with
       // different page depths; keep the union so a shallow fetch does not
       // throw away rows a deeper one already had. Fresh rows win. A scope
       // change replaces the bag instead of mixing profiles.
-      const merged = mergeKnownRows($knownRows.get(), $knownRowsScope.get(), result.rows, scopeKey(), KNOWN_ROWS_CAP)
+      const merged = mergeKnownRows($knownRows.get(), $knownRowsScope.get(), result.rows, key, KNOWN_ROWS_CAP)
       $knownRows.set(merged.rows)
       $knownRowsScope.set(merged.scope)
       checkSessionBudgets(result.rows)
@@ -2638,7 +2676,7 @@ function SessionRow({ session, selected, onSelect, scan, treeCost, branched }) {
           session.hasUsage
             ? jsx('span', {
                 style: { ...moneyStyle, fontSize: '0.75rem', color: mark ? text.accent : text.secondary, flexShrink: 0, minWidth: 72, textAlign: 'right' },
-                title: mark ? EN.trueCostTip : undefined,
+                title: mark ? (treeCost === null ? EN.accountingUnknown : EN.trueCostTip) : undefined,
                 children: fmtUsd(display)
               })
             : null
@@ -2667,13 +2705,16 @@ const SCAN_BATCH = 200
 const SCAN_CONCURRENCY = 4
 
 async function scanSessions(rows, onProgress) {
+  const owner = scopeKey()
   const todo = rows.filter(r => r.hasUsage && !$scans.get()[scanKey(r)])
   let done = 0
   const worker = async () => {
     while (todo.length) {
+      if (owner !== scopeKey()) return
       const session = todo.shift()
       try {
         const page = await data.getMessages(session.id, scopeFor(session))
+        if (owner !== scopeKey()) return
         const summary = scanSummary(analyzeMessages(page.messages))
         $scans.set({ ...$scans.get(), [scanKey(session)]: summary })
       } catch {
@@ -2685,6 +2726,7 @@ async function scanSessions(rows, onProgress) {
     }
   }
   await Promise.all(Array.from({ length: SCAN_CONCURRENCY }, worker))
+  if (owner !== scopeKey()) return
   const all = $scans.get()
   const keys = Object.keys(all).slice(-1000)
   const persisted = {}
@@ -3020,11 +3062,16 @@ function SessionsTab() {
 
 function useAnalysis(session) {
   const mode = useValue($mode)
+  const owner = scopeKey()
+  const readScope = scopeFor(session)
   const q = useQuery({
-    queryKey: [PLUGIN_ID, 'messages', session.profile || '', session.id, session.messageCount],
+    queryKey: [PLUGIN_ID, 'messages', owner, session.profile || '', session.id, session.messageCount],
     enabled: mode === 'full' && !!session.id,
     staleTime: 5 * 60_000,
-    queryFn: () => data.getMessages(session.id, scopeFor(session))
+    queryFn: () => {
+      if (owner !== scopeKey()) throw new LedgerlineError('rest', 'scope-changed', 'Profile or connection changed. Refresh this view.')
+      return data.getMessages(session.id, readScope)
+    }
   })
   const analysis = useMemo(() => (q.data ? analyzeMessages(q.data.messages) : null), [q.data])
   return { ...q, analysis, mode }
@@ -3229,7 +3276,7 @@ function SubagentsPane({ t, analysis, session }) {
 function ReceiptLine({ t, line, session }) {
   const indent = line.kind === 'own' ? 0 : 12 + Math.max(0, num(line.depth) - 1) * 10
   const value = line.kind === 'unpriced' ? t('unpricedChild') : line.kind === 'artifact' ? t('openFile') : fmtUsd(line.usd)
-  const label = line.kind === 'own' ? t('ownWork') : line.kind === 'artifact' ? line.label : line.label
+  const label = line.kind === 'own' ? (line.recordedOnly ? 'recorded session cost' : t('ownWork')) : line.label
   const tip = line.transcriptUsd !== null && line.transcriptUsd !== undefined
     ? `transcript ${fmtUsd(line.transcriptUsd)}`
     : line.kind === 'artifact'
@@ -3263,10 +3310,10 @@ function ReceiptPane({ t, session, receipt }) {
       jsx(LedgerRule, { heavy: true }),
       jsx(LedgerRow, {
         label: receipt.floor ? `${t('trueCost')} (${t('trueCostFloor')})` : t('trueCost'),
-        value: fmtUsd(receipt.totalUsd),
+        value: receipt.accounting === 'unknown' ? 'unknown' : fmtUsd(receipt.totalUsd),
         strong: true
       }),
-      jsx(Muted, { style: { marginTop: 4 }, children: receipt.included ? t('trueCostTip') : t('trueCostAdded') })
+      jsx(Muted, { style: { marginTop: 4 }, children: receipt.accounting === 'unknown' ? t('accountingUnknown') : receipt.included ? t('trueCostTip') : t('trueCostAdded') })
     ]
   })
 }
@@ -3348,7 +3395,7 @@ function ToolLine({ tool }) {
     style: { display: 'flex', gap: 8, alignItems: 'baseline', fontSize: '0.75rem', padding: '2px 0' },
     children: [
       jsx('span', { style: { fontFamily: mono, color, minWidth: 110 }, children: tool.name }),
-      jsx('span', { style: { color: text.tertiary, minWidth: 40 }, children: tool.endedAt ? (tool.durationS !== null ? `${tool.durationS.toFixed(1)}s` : 'done') : '…' }),
+      jsx('span', { style: { color: text.tertiary, minWidth: 40 }, children: ['interrupted', 'unknown'].includes(tool.verdict) ? tool.verdict : tool.endedAt ? (tool.durationS !== null ? `${tool.durationS.toFixed(1)}s` : 'done') : '…' }),
       jsx('span', { style: { color: text.secondary, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: tool.error || tool.summary || (tool.args && tool.args.command) || (tool.args && (tool.args.path || tool.args.file_path)) || '' })
     ]
   })
@@ -3968,14 +4015,48 @@ async function runCliReport(days) {
 // $analyses: storedSessionId -> { kind, text, at, runtimeId?, storedId?, taskId?, status }
 const $analyses = atom({})
 const ANALYSES_CAP = 50
+const analysisScopes = new Map()
 
-function saveAnalysis(sessionId, entry) {
-  const all = { ...$analyses.get(), [sessionId]: entry }
+function saveAnalysis(sessionId, entry, owner = scopeKey()) {
+  analysisScopes.set(owner, entry.connectionId || analysisScopes.get(owner) || currentConnection())
+  const previous = owner === scopeKey() ? $analyses.get() : stored(`analyses@${owner}`, {})
+  const all = { ...previous, [sessionId]: entry }
   const keys = Object.keys(all).sort((a, b) => (all[b].at || 0) - (all[a].at || 0)).slice(0, ANALYSES_CAP)
   const trimmed = {}
   for (const k of keys) trimmed[k] = all[k]
-  $analyses.set(trimmed)
-  rememberScoped('analyses', trimmed)
+  if (owner === scopeKey()) $analyses.set(trimmed)
+  remember(`analyses@${owner}`, trimmed)
+}
+
+function auditStatus(record) {
+  if (!record.lastComplete) return 'streaming'
+  return record.lastComplete.error || !['complete', 'completed', 'done', 'success'].includes(record.lastComplete.status) ? 'interrupted' : 'done'
+}
+
+function persistAuditEvent(event, record) {
+  if (!['message.delta', 'message.complete', 'session.info'].includes(event.type)) return
+  const connection = event.connectionId || currentConnection()
+  for (const [owner, originatingConnection] of analysisScopes) {
+    if (connection !== originatingConnection) continue
+    const entries = owner === scopeKey() ? $analyses.get() : stored(`analyses@${owner}`, {})
+    for (const [id, entry] of Object.entries(entries)) {
+      if (entry.kind !== 'audit' || entry.runtimeId !== event.session_id || !['streaming', 'interrupted'].includes(entry.status)) continue
+      const payload = event.payload || {}
+      const answer = event.type === 'message.delta' ? (entry.text || '') + (payload.text || '')
+        : event.type === 'message.complete' && typeof payload.text === 'string' && payload.text ? payload.text : entry.text
+      saveAnalysis(id, { ...entry, text: answer, storedId: record.storedId || entry.storedId, status: auditStatus(record) }, owner)
+    }
+  }
+}
+
+async function recoverAudit(session, entry, owner = scopeKey()) {
+  if (!entry?.storedId || entry.kind !== 'audit' || entry.status === 'done') return
+  const page = await data.getMessages(entry.storedId, scopeFor(session))
+  const current = stored(`analyses@${owner}`, {})[session.id]
+  if (!current || current.runtimeId !== entry.runtimeId || current.status === 'done' || liveFor(entry.runtimeId)) return
+  const answers = page.messages.filter(m => m.role === 'assistant' && typeof m.content === 'string' && m.content.trim() && !m.tool_calls?.length)
+  const answer = answers[answers.length - 1]
+  if (answer) saveAnalysis(session.id, { ...current, text: answer.content, status: 'interrupted', recovered: true, truncated: page.truncated }, owner)
 }
 
 function methodMissing(error) {
@@ -3993,16 +4074,19 @@ async function resolveWriteRoute(session) {
 }
 
 async function withHeldRoute(session, fn) {
+  const connection = currentConnection()
+  const profile = activeProfileName()
   const route = await resolveWriteRoute(session)
   const check = async () => {
+    if (connection !== currentConnection() || (!route && profile !== activeProfileName())) {
+      throw new LedgerlineError('rpc', 'owner-changed', EN.anOwnerChanged)
+    }
     if (!route || typeof host.profileRoutes !== 'function') return
     const still = pickRoute(await host.profileRoutes(), { profile: route.profile, connectionId: route.connectionId || currentConnection() })
     if (!still) throw new LedgerlineError('rpc', 'owner-changed', EN.anOwnerChanged)
   }
   await check()
-  const result = await fn(route)
-  await check()
-  return result
+  return fn(route, check)
 }
 
 function runQuickExplain(session, digest) {
@@ -4010,7 +4094,19 @@ function runQuickExplain(session, digest) {
 }
 
 function runFullAudit(session, digest) {
-  return withHeldRoute(session, route => data.fullAudit(session, digest, route))
+  const owner = scopeKey()
+  const connectionId = currentConnection()
+  let created = null
+  return withHeldRoute(session, (route, check) => data.fullAudit(session, digest, route, ref => {
+    created = { kind: 'audit', text: '', at: Date.now(), status: 'streaming', connectionId, ...ref }
+    saveAnalysis(session.id, created, owner)
+  }, check)).catch(error => {
+    if (created) {
+      const current = stored(`analyses@${owner}`, {})[session.id]
+      if (current?.runtimeId === created.runtimeId && current.status === 'streaming') saveAnalysis(session.id, { ...current, status: 'interrupted' }, owner)
+    }
+    throw error
+  })
 }
 
 async function runBackgroundAudit(session, digest) {
@@ -4027,26 +4123,29 @@ async function runBackgroundAudit(session, digest) {
 // the plugin (a hot reload would otherwise stack listeners) and time out.
 const backgroundWatchers = new Map()
 const BACKGROUND_WAIT_MS = 30 * 60 * 1000
-function watchBackground(sessionId, taskId) {
+function watchBackground(sessionId, taskId, owner = scopeKey(), connectionId = currentConnection()) {
+  const watcherKey = `${owner}:${taskId}`
+  if (backgroundWatchers.has(watcherKey)) backgroundWatchers.get(watcherKey)()
   const done = () => {
     clearTimeout(timer)
-    const off = backgroundWatchers.get(taskId)
-    backgroundWatchers.delete(taskId)
-    if (off) off()
+    backgroundWatchers.delete(watcherKey)
+    off()
   }
   const off = host.onEvent('background.complete', e => {
     const p = e.payload || {}
-    if (p.task_id !== taskId) return
+    if (p.task_id !== taskId || (e.connectionId || currentConnection()) !== connectionId) return
     done()
-    saveAnalysis(sessionId, { kind: 'background', text: String(p.text || ''), at: Date.now(), status: 'done' })
+    const cur = stored(`analyses@${owner}`, {})[sessionId]
+    if (!cur || cur.taskId !== taskId || cur.status !== 'running') return
+    saveAnalysis(sessionId, { ...cur, text: String(p.text || ''), status: p.error ? 'interrupted' : 'done' }, owner)
     host.notify({ kind: 'info', title: PLUGIN_NAME, message: `Background audit finished for ${sessionId.slice(0, 12)}`, durationMs: 10000 })
   })
   const timer = setTimeout(() => {
     done()
-    const cur = $analyses.get()[sessionId]
-    if (cur && cur.status === 'running') saveAnalysis(sessionId, { ...cur, status: 'interrupted' })
+    const cur = stored(`analyses@${owner}`, {})[sessionId]
+    if (cur && cur.taskId === taskId && cur.status === 'running') saveAnalysis(sessionId, { ...cur, status: 'interrupted' }, owner)
   }, BACKGROUND_WAIT_MS)
-  backgroundWatchers.set(taskId, off)
+  backgroundWatchers.set(watcherKey, done)
   return done
 }
 
@@ -4067,21 +4166,27 @@ function AnalysisPane({ t, session, analysis }) {
   const saved = all[session.id] || null
   const digest = useMemo(() => buildDigest(session, analysis, { includeArgs }), [session, analysis, includeArgs])
   const auditLive = saved && saved.kind === 'audit' && saved.runtimeId ? live[saved.runtimeId] : null
+  useEffect(() => {
+    if (saved?.kind === 'audit' && saved.storedId && saved.status !== 'done' && !saved.recovered && !auditLive) {
+      void recoverAudit(session, saved, scopeKey()).catch(() => {})
+    }
+  }, [session.id, saved?.runtimeId, saved?.storedId, saved?.status, saved?.recovered, auditLive])
 
   const run = async (kind, fn) => {
+    const owner = scopeKey()
+    const connectionId = currentConnection()
     setBusy(kind)
     setError('')
     try {
       if (kind === 'quick') {
         const answer = await fn()
-        saveAnalysis(session.id, { kind, text: answer, at: Date.now(), status: 'done' })
+        saveAnalysis(session.id, { kind, text: answer, at: Date.now(), status: 'done', connectionId }, owner)
       } else if (kind === 'audit') {
-        const ref = await fn()
-        saveAnalysis(session.id, { kind, text: '', at: Date.now(), status: 'streaming', ...ref })
+        await fn()
       } else {
         const ref = await fn()
-        saveAnalysis(session.id, { kind, text: '', at: Date.now(), status: 'running', ...ref })
-        watchBackground(session.id, ref.taskId)
+        saveAnalysis(session.id, { kind, text: '', at: Date.now(), status: 'running', connectionId, ...ref }, owner)
+        watchBackground(session.id, ref.taskId, owner, connectionId)
       }
     } catch (e) {
       setError(
@@ -4100,9 +4205,9 @@ function AnalysisPane({ t, session, analysis }) {
     }
   }
 
-  const answerText = saved ? (saved.kind === 'audit' && auditLive ? auditLive.text || saved.text : saved.text) : ''
+  const answerText = saved ? saved.text || (auditLive && auditLive.text) || '' : ''
   const stale = saved && (saved.status === 'streaming' || saved.status === 'running') && !auditLive && Date.now() - (saved.at || 0) > BACKGROUND_WAIT_MS
-  const answerStatus = saved ? (saved.kind === 'audit' && auditLive ? (auditLive.busy ? 'streaming' : 'done') : stale ? 'interrupted' : saved.status) : ''
+  const answerStatus = saved ? (saved.kind === 'audit' && auditLive ? auditStatus(auditLive) : stale ? 'interrupted' : saved.status) : ''
 
   return jsxs('div', {
     children: [
@@ -4149,6 +4254,7 @@ function AnalysisPane({ t, session, analysis }) {
             style: { marginTop: 10, padding: 8, border: '1px solid var(--ui-stroke-secondary)', borderRadius: 4 },
             children: [
               jsx(Muted, { style: { marginBottom: 4 }, children: `${t('anCached')} (${saved.kind}, ${fmtWhen(saved.at / 1000)}${answerStatus && answerStatus !== 'done' ? `, ${answerStatus}` : ''})` }),
+              saved.recovered ? jsx(Muted, { children: saved.truncated ? 'Recovered from a partial transcript. Completion is unknown.' : 'Recovered from the audit session. Completion was not observed.' }) : null,
               answerText ? jsx(AnswerBody, { text: answerText }) : jsx(Muted, { children: answerStatus === 'done' ? '(empty answer)' : answerStatus === 'interrupted' ? t('anInterrupted') : t('anRunning') })
             ]
           })
@@ -4529,8 +4635,8 @@ export default {
   description: 'Live cost and session intelligence for any gateway, no backend needed.',
   defaultEnabled: true,
   register(ctx) {
-    // Older desktops predate ctx.onDispose; fall back to a no-op.
-    const onDispose = typeof ctx.onDispose === 'function' ? fn => ctx.onDispose(fn) : () => {}
+    if (typeof ctx.onDispose !== 'function') throw new Error('Ledgerline requires a Hermes Desktop build with plugin onDispose support. Update Hermes Desktop and reload plugins.')
+    const onDispose = fn => ctx.onDispose(fn)
     storage = ctx.storage || null
     os = ctx.os || null
     $tab.set(stored('tab', 'sessions'))
@@ -4545,6 +4651,9 @@ export default {
       $budgets.set(storedScoped('budgets', { month: null, session: null }))
       $dismissed.set(storedScoped('dismissed', []))
       $analyses.set(storedScoped('analyses', {}))
+      analysisScopes.set(key, currentConnection())
+      $selected.set(null)
+      $live.set({})
       $scans.set(storedScoped('scans', {}))
       $knownRows.set([])
       $knownRowsScope.set('')
@@ -4620,6 +4729,7 @@ export default {
     onDispose(() => {
       for (const off of backgroundWatchers.values()) off()
       backgroundWatchers.clear()
+      analysisScopes.clear()
     })
   }
 }

@@ -12,7 +12,7 @@
   One plugin file for Hermes Desktop. No backend, no restart. The same file
   works on a local gateway and on a remote one.
 
-  <sub>POWERED BY <a href="https://github.com/NousResearch/hermes-agent">HERMES AGENT</a> &nbsp;·&nbsp; COMMUNITY PLUGIN &nbsp;·&nbsp; VERSION 0.1.4</sub>
+  <sub>POWERED BY <a href="https://github.com/NousResearch/hermes-agent">HERMES AGENT</a> &nbsp;·&nbsp; COMMUNITY PLUGIN &nbsp;·&nbsp; VERSION 0.1.5</sub>
 
   <br /><br />
 
@@ -46,7 +46,7 @@ Ledgerline handles the small decisions that make a cost view worth opening again
 
 - Monthly and per-session budgets warn you at 80% and 100%.
 - Recommendations name the dollar figure: low cache hit rates, unknown pricing, helper tasks eating a big share, a cheaper model for the same tokens.
-- True cost for a task: the parent session plus its subagents, shown as a receipt. Newer Hermes already folds children into the session total; the receipt splits that bill. Older gateways that omit child spend get those dollars added. Costliest sort uses this number. Child rows and file paths are clickable when the desktop can open them.
+- Parent and subagent costs appear as separate recorded rows in a receipt. Combined cost is unknown when the gateway does not specify whether parent costs include children. Costliest sort falls back to recorded session cost. Child rows and file paths are clickable when the desktop can open them.
 - Title and full-text search over sessions. Sort by recent, cost, tokens, tools, or worst (failed tool calls).
 - Active profile, any single profile, or all of them merged. Budgets, dismissed tips, scans, and saved answers stay per profile.
 - Budget alerts go out through any messaging platform the gateway already has.
@@ -88,6 +88,8 @@ Quick explain, full audit, and background audit use your configured Hermes model
 
 A full audit opens a native Hermes session with the digest as context and streams the answer back. A background audit runs headless and saves the result. Source text from the transcript is treated as evidence only. The agent is told not to run commands the transcript suggests.
 
+Audit text and completion status persist while streaming, under the connection and profile that started the audit. Reopening an unfinished audit can recover its answer from the stored Hermes session. Recovery labels completion as unobserved and flags partial transcripts.
+
 Model calls apply their normal usage costs. Scheduled reports are one agent turn each, on the default model.
 
 ## Privacy you can explain in one breath
@@ -107,6 +109,10 @@ Budgets, dismissed tips, scans, and saved answers live in Hermes plugin storage 
 
 Ledgerline uses the desktop plugin SDK, `host.request` JSON-RPC, and the gateway's core REST routes through the desktop's own bridge. That is the same door the app uses for its session list, so it works on local, token, and OAuth remotes.
 
+Version 0.1.5 requires `ctx.onDispose` so plugin reloads can release event listeners and timers. Builds without it report an update requirement before registering background work. The REST bridge is an internal Desktop dependency, not a public SDK guarantee.
+
+An uncertain scheduled-report creation response does not trigger a second write. Refresh the scheduled jobs list before retrying. CLI fallback is limited to a missing bridge or a missing REST endpoint.
+
 Reports and alert pushes run `hermes cron` and `hermes send` on the gateway host. If the REST door is missing, the plugin drops to an RPC-only mode and says so on the About tab.
 
 List prices for what-ifs and the live estimate come from the gateway's model catalog, fetched on load, again on every reconnect, and hourly.
@@ -121,10 +127,14 @@ It is checked by hand on a local gateway (Hermes 0.20.4) and on a remote gateway
 - Saved analysis answers cap at 50 per profile scope.
 - Cache writes per model come from the session list and show as a floor when child sessions are missing from it.
 - What-if lines skip free models and need at least $0.05 of recorded spend on the row.
-- True cost on the list uses known session rows only. Transcript-only children show up after you open the parent. Month totals stay on each row's own spend so children are not counted twice.
+- Combined costs require an explicit accounting contract, which current gateway rows do not provide. Transcript-only children show up after you open the parent. Monthly analytics remain the gateway's recorded totals; Ledgerline cannot certify their treatment of child costs.
 - Clicking a file path reveals it in the OS file manager when that door exists, otherwise the path is copied.
 
 Ledgerline works around a few upstream gaps today. If Hermes adds the fields, the plugin will feature-detect them.
+
+## Regression checks
+
+Run `node --test tests/regressions.cjs` with Node.js. The suite executes the actual plugin with a simulated SDK and covers accounting, interrupted tools, delayed scope changes, audit persistence and recovery, cron retry behavior, and listener/timer cleanup. It does not send prompts or create gateway jobs.
 
 - `session.usage` over JSON-RPC returns tokens but no cache tokens and no cost.
 - The gateway relay drops `cost_usd` from `subagent.complete` events.
