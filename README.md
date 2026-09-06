@@ -12,7 +12,7 @@
   One plugin file for Hermes Desktop. No backend, no restart. The same file
   works on a local gateway and on a remote one.
 
-  <sub>POWERED BY <a href="https://github.com/NousResearch/hermes-agent">HERMES AGENT</a> &nbsp;·&nbsp; COMMUNITY PLUGIN &nbsp;·&nbsp; VERSION 0.1.6</sub>
+  <sub>POWERED BY <a href="https://github.com/NousResearch/hermes-agent">HERMES AGENT</a> &nbsp;·&nbsp; COMMUNITY PLUGIN &nbsp;·&nbsp; VERSION 0.1.7</sub>
 
   <br /><br />
 
@@ -109,7 +109,7 @@ Budgets, dismissed tips, scans, and saved answers live in Hermes plugin storage 
 
 Ledgerline uses the desktop plugin SDK, `host.request` JSON-RPC, and the gateway's core REST routes through the desktop's own bridge. That is the same door the app uses for its session list, so it works on local, token, and OAuth remotes.
 
-Version 0.1.6 requires `ctx.onDispose` so plugin reloads can release event listeners and timers. Builds without it report an update requirement before registering background work. The REST bridge is an internal Desktop dependency, not a public SDK guarantee.
+Version 0.1.7 requires `ctx.onDispose` so plugin reloads can release event listeners and timers. Builds without it report an update requirement before registering background work. The REST bridge is an internal Desktop dependency, not a public SDK guarantee.
 
 An uncertain scheduled-report creation response does not trigger a second write. Refresh the scheduled jobs list before retrying. CLI fallback is limited to a missing bridge or a missing REST endpoint.
 
