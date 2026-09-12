@@ -1,0 +1,12 @@
+{
+  "name": "hermes-ledgerline",
+  "version": "0.1.7.post1",
+  "description": "Inspect session costs and usage in Hermes Desktop.",
+  "author": "Adolanium",
+  "manifest_version": 1,
+  "kind": "standalone",
+  "provides_tools": [],
+  "provides_hooks": [],
+  "provides_middleware": [],
+  "requires_env": []
+}
