@@ -186,34 +186,64 @@ test('paginated message reads stop when the connection changes', async () => {
   assert.equal(run('calls'), 1)
 })
 
-test('the Chinese bundle covers every English key and preserves placeholders', () => {
+function loadLocales() {
   const { run } = load()
-  const en = run('EN'), zh = run('ZH')
-  assert.deepEqual(Object.keys(zh).sort(), Object.keys(en).sort())
-  for (const key of Object.keys(en)) {
-    assert.equal(typeof zh[key], 'string', key)
-    assert.ok(zh[key].trim(), `${key} must not be empty`)
-    assert.deepEqual(zh[key].match(/\{\w+\}/g)?.sort() || [], en[key].match(/\{\w+\}/g)?.sort() || [], `${key} placeholders`)
-  }
-  // Every entry must differ from English except the product name, so a locale
-  // cop-out (a whole block left as the EN string) fails here.
-  assert.equal(run('JSON.stringify(Object.keys(ZH).filter(k => ZH[k] === EN[k]))'), '["nav","title"]')
+  run(`globalThis.disposers = []; globalThis.localesDisposed = false;
+    plugin.register({storage: store, onDispose: fn => disposers.push(fn), registerMany() {},
+      i18n: {register(bundles) {
+        globalThis.bundles = bundles
+        return () => { localesDisposed = true }
+      }}
+    })`)
+  return { run, bundles: run('bundles') }
+}
+
+test('registration covers every Hermes Desktop locale and disposes its bundles', () => {
+  const { run, bundles } = loadLocales()
+  // Hermes Desktop languages.ts at ebda770a465fd921b35bada4ac7e4fd9311cc754.
+  assert.deepEqual(Object.keys(bundles).sort(), ['ar', 'en', 'ja', 'ru', 'zh', 'zh-hant'])
+  run('for (const dispose of disposers) dispose()')
+  assert.equal(run('localesDisposed'), true)
 })
 
-test('live labels follow the SDK locale and retain the English fallback', () => {
-  const { run } = load()
+for (const locale of ['zh', 'zh-hant', 'ja', 'ar', 'ru']) {
+  test(`${locale} covers every English key, preserves placeholders and translates text`, () => {
+    const { bundles } = loadLocales()
+    const en = bundles.en, translated = bundles[locale]
+    assert.ok(translated, `${locale} must be registered`)
+    assert.deepEqual(Object.keys(translated).sort(), Object.keys(en).sort())
+    for (const key of Object.keys(en)) {
+      assert.equal(typeof translated[key], 'string', key)
+      assert.ok(translated[key].trim(), `${key} must not be empty`)
+      assert.deepEqual(translated[key].match(/\{\w+\}/g)?.sort() || [], en[key].match(/\{\w+\}/g)?.sort() || [], `${key} placeholders`)
+    }
+    // Product names are intentionally unchanged; copied English blocks are not.
+    assert.deepEqual(Object.keys(translated).filter(key => translated[key] === en[key]).sort(), ['nav', 'title'])
+    for (const [key, literal] of [['ovCliReport', 'hermes insights'], ['rpNoTargets', '/sethome'], ['anQuickTip', 'llm.oneshot']]) {
+      assert.ok(translated[key].includes(literal), `${key} must preserve ${literal}`)
+    }
+  })
+}
+
+test('live labels switch across all SDK locales and retain the English fallback', () => {
+  const { run, bundles } = loadLocales()
   const render = () => JSON.stringify(run('LiveCard()'))
   assert.match(render(), /tokens/)
   assert.match(render(), /n\/a/)
-  run(`capabilities.usePluginI18n = true; globalThis.locale = 'zh'; sdk.usePluginI18n = id => {
+  run(`capabilities.usePluginI18n = true; globalThis.locale = 'en'; sdk.usePluginI18n = id => {
     if (id !== PLUGIN_ID) throw Error('wrong plugin namespace')
-    return key => (locale === 'zh' ? ZH : EN)[key]
+    return key => bundles[locale]?.[key] ?? bundles.en[key] ?? key
   }`)
-  assert.match(render(), /暂无数据/)
-  assert.match(render(), /Token/)
-  assert.doesNotMatch(render(), /n\/a/)
-  assert.equal(run('Chip().props.children.props.children[1].props.children'), run('ZH.paneTitle'))
-  assert.equal(run(`ToolLine({tool:{name:'terminal',endedAt:1,durationS:null},t:useT()}).props.children[1].props.children`), run('ZH.toolDone'))
+  for (const locale of ['zh', 'zh-hant', 'ja', 'ar', 'ru', 'en']) {
+    run(`locale = ${JSON.stringify(locale)}`)
+    const rendered = render()
+    assert.ok(rendered.includes(bundles[locale].naValue), `${locale} unavailable usage`)
+    assert.ok(rendered.includes(bundles[locale].liveTokens), `${locale} token label`)
+    assert.equal(run('Chip().props.children.props.children[1].props.children'), bundles[locale].paneTitle)
+    assert.equal(run(`ToolLine({tool:{name:'terminal',endedAt:1,durationS:null},t:useT()}).props.children[1].props.children`), bundles[locale].toolDone)
+  }
+  run(`locale = 'unsupported'`)
+  assert.match(render(), /n\/a/)
   run(`locale = 'en'`)
   assert.match(render(), /n\/a/)
   assert.equal(run('Chip().props.children.props.children[1].props.children'), 'ledger')
