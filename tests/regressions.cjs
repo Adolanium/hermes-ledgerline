@@ -17,7 +17,7 @@ function load() {
     onEvent(name, fn) { events.set(fn, name); return () => events.delete(fn) },
     notify() {}, request: async () => ({})
   }
-  const ctx = vm.createContext({ console, sdk: { host, atom, useValue: a => a.get(), useQuery: o => o, STATUSBAR_AREAS: { right: 'right' }, queryClient: { invalidateQueries() {} } },
+  const ctx = vm.createContext({ console, sdk: { host, atom, cn: (...classes) => classes.filter(Boolean).join(' '), useValue: a => a.get(), useQuery: o => o, STATUSBAR_AREAS: { right: 'right' }, queryClient: { invalidateQueries() {} } },
     useState: v => [v, () => {}], useMemo: fn => fn(), useRef: v => ({ current: v }), useEffect() {}, jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }),
     setTimeout(fn) { const id = {}; timers.set(id, fn); return id }, clearTimeout(id) { timers.delete(id) }, setInterval() { return {} }, clearInterval() {},
     disk, timers, events, store: { get: (k, fallback) => disk.has(k) ? disk.get(k) : fallback, set: (k, v) => disk.set(k, v), remove: k => disk.delete(k) }
@@ -184,4 +184,38 @@ test('paginated message reads stop when the connection changes', async () => {
   run(`resolvePage({messages:Array.from({length:500},()=>({role:'user',content:'a'}))})`)
   await assert.rejects(run('pending'), /connection changed/)
   assert.equal(run('calls'), 1)
+})
+
+test('the Chinese bundle covers every English key and preserves placeholders', () => {
+  const { run } = load()
+  const en = run('EN'), zh = run('ZH')
+  assert.deepEqual(Object.keys(zh).sort(), Object.keys(en).sort())
+  for (const key of Object.keys(en)) {
+    assert.equal(typeof zh[key], 'string', key)
+    assert.ok(zh[key].trim(), `${key} must not be empty`)
+    assert.deepEqual(zh[key].match(/\{\w+\}/g)?.sort() || [], en[key].match(/\{\w+\}/g)?.sort() || [], `${key} placeholders`)
+  }
+  // Every entry must differ from English except the product name, so a locale
+  // cop-out (a whole block left as the EN string) fails here.
+  assert.equal(run('JSON.stringify(Object.keys(ZH).filter(k => ZH[k] === EN[k]))'), '["nav","title"]')
+})
+
+test('live labels follow the SDK locale and retain the English fallback', () => {
+  const { run } = load()
+  const render = () => JSON.stringify(run('LiveCard()'))
+  assert.match(render(), /tokens/)
+  assert.match(render(), /n\/a/)
+  run(`capabilities.usePluginI18n = true; globalThis.locale = 'zh'; sdk.usePluginI18n = id => {
+    if (id !== PLUGIN_ID) throw Error('wrong plugin namespace')
+    return key => (locale === 'zh' ? ZH : EN)[key]
+  }`)
+  assert.match(render(), /暂无数据/)
+  assert.match(render(), /Token/)
+  assert.doesNotMatch(render(), /n\/a/)
+  assert.equal(run('Chip().props.children.props.children[1].props.children'), run('ZH.paneTitle'))
+  assert.equal(run(`ToolLine({tool:{name:'terminal',endedAt:1,durationS:null},t:useT()}).props.children[1].props.children`), run('ZH.toolDone'))
+  run(`locale = 'en'`)
+  assert.match(render(), /n\/a/)
+  assert.equal(run('Chip().props.children.props.children[1].props.children'), 'ledger')
+  assert.equal(run(`ToolLine({tool:{name:'terminal',endedAt:1,durationS:null},t:useT()}).props.children[1].props.children`), 'done')
 })

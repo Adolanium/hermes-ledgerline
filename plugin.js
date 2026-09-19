@@ -2330,7 +2330,241 @@ const EN = {
   ovProfileUnreadable: 'unreadable',
   anOwnerChanged: 'The profile or connection changed. Return to that profile and run it again.',
   anNoRoute: 'Connect the profile this session belongs to before running analysis.',
-  anBackgroundNeedsProfile: 'Background audit needs a live session on the same profile.'
+  anBackgroundNeedsProfile: 'Background audit needs a live session on the same profile.',
+  liveTokens: 'tokens',
+  liveIn: 'in',
+  liveOut: 'out',
+  liveRunning: 'running',
+  estSuffix: 'est',
+  naValue: 'n/a',
+  toolDone: 'done',
+  cacheShort: 'cache',
+  anEmpty: '(empty answer)',
+}
+
+const ZH = {
+  nav: 'Ledgerline',
+  title: 'Ledgerline',
+  subtitle: '实时花费与会话洞察',
+  tabOverview: '总览',
+  tabSessions: '会话',
+  tabAlerts: '提醒',
+  tabAbout: '关于',
+  aboutHeading: '关于本机桌面与网关',
+  gateway: '网关连接',
+  profile: '配置档',
+  connection: '连接',
+  backend: '后端',
+  mode: '模式',
+  probing: '检测中…',
+  ok: '正常',
+  missing: '缺失',
+  full: '完整（RPC + 核心 REST）',
+  rpcOnly: '仅 RPC（核心 REST 不可用，费用列将不可得）',
+  doors: '桌面可用接口',
+  backendDoors: '网关可用接口',
+  reprobe: '重新检测',
+  hermesHome: '网关 Hermes 主目录',
+  diagCopy: '复制诊断信息',
+  diagCopied: '诊断信息已复制',
+  diagNoClipboard: '本桌面没有剪贴板权限',
+  palOpen: 'Ledgerline：打开',
+  keyOpen: '打开 Ledgerline',
+  search: '按标题、ID 或预览筛选',
+  sortRecent: '最近',
+  sortCostliest: '最贵',
+  sortTokens: 'Token 数',
+  sortTools: '工具数',
+  allSources: '全部来源',
+  loadMore: '加载更多',
+  loading: '正在加载会话…',
+  noSessions: '没有匹配的会话。',
+  sessions: '会话',
+  fromRpc: '会话列表仅来自 RPC：此网关路径不提供 Token 与费用',
+  scopeLost: '此路径不支持全部配置档列表：只显示当前激活的配置档',
+  pickSession: '选一个会话查看详情。',
+  tools: '工具',
+  cacheHit: '缓存命中',
+  spend: '花费',
+  trueCost: '真实花费',
+  trueCostFloor: '至少',
+  trueCostTip: '合并花费需要网关给出明确的记账口径。',
+  accountingUnknown: '合并花费未知：网关未说明父会话费用是否包含子代理。已记录的行会单独显示。',
+  trueCostAdded: '会话行缺少子会话花费；这部分金额已在此累加',
+  receipt: '明细',
+  ownWork: '本会话',
+  unpricedChild: '未计价',
+  openFile: '在文件管理器中显示',
+  pathCopied: '路径已复制',
+  pathUnavailable: '无法打开或复制该路径',
+  childNotListed: '子会话不在当前列表中。若桌面支持，可在对话中打开它。',
+  msgs: '消息',
+  duration: '耗时',
+  started: '开始于',
+  open: '在对话中打开',
+  copyId: '复制 ID',
+  copied: '会话 ID 已复制',
+  about: '关于',
+  summary: '摘要',
+  loadingDetail: '正在读取消息…',
+  detailUnavailable: '工具、文件与子代理详情需要核心 REST（当前为仅 RPC 模式）。',
+  truncatedNote: '只读取了前 {n} 条消息。',
+  subTools: '工具',
+  subFailures: '失败',
+  subFiles: '文件',
+  subSubagents: '子代理',
+  callArgs: '参数',
+  callResult: '结果',
+  callNoArgs: '（无参数）',
+  noCalls: '本会话没有工具调用。',
+  noFailures: '没有失败或可疑的工具调用。',
+  noFiles: '没有涉及文件。',
+  noSubagents: '本会话没有子代理。',
+  failed: '失败',
+  suspected: '可疑',
+  showArgs: '展开参数',
+  hideArgs: '收起参数',
+  reads: '读取',
+  writes: '写入',
+  paneTitle: '花销',
+  liveNoSession: '没有聚焦的会话。',
+  liveIdle: '空闲',
+  liveBusy: '工作中',
+  liveEstimate: '实时估算',
+  liveNoRate: '暂无费率',
+  liveContext: '上下文',
+  liveCalls: '调用',
+  liveTools: '本会话工具',
+  liveSubagents: '子代理',
+  liveLastTool: '最近工具',
+  liveOpenPage: '打开 Ledgerline',
+  subTimeline: '时间线',
+  noTimeline: '本桌面暂无该会话的实时事件。',
+  liveOnlyOwn: '只有本桌面驱动的会话才有实时事件。',
+  compressions: '压缩次数',
+  ovToday: '今天',
+  ov7: '近 7 天',
+  ov30: '近 30 天',
+  ovMonth: '本月至今',
+  ovProjected: '预计月末',
+  ovProjectedTip: '本月至今，加上剩余天数按近 7 天均值的推算。只是预测，不是账单。',
+  ovCache: '缓存命中率',
+  ovSessions: '会话',
+  ovCached: '缓存',
+  ovWritten: '写入',
+  ovHelperOnly: '仅辅助任务',
+  ovDaily: '每日花费',
+  ovByModel: '按模型',
+  ovByTask: '按辅助任务',
+  ovWhatIf: '同样 Token 换成',
+  ovRecs: '建议',
+  ovNoRecs: '此时间段内没有需要提示的问题。',
+  ovDismiss: '忽略',
+  ovRestore: '恢复',
+  ovRestoreAll: '全部恢复',
+  ovDismissedCount: '已忽略 {n} 条',
+  ovShow: '展开',
+  ovHide: '收起',
+  ovUnavailable: '统计分析需要核心 REST（当前为仅 RPC 模式）。请改用命令行报告。',
+  ovCliReport: '运行 hermes insights',
+  ovLoading: '正在加载统计…',
+  ovWindow: '区间',
+  ovDays: '天',
+  cacheReadShare: '缓存读取占比',
+  budgets: '预算',
+  budgetMonth: '月度预算（美元）',
+  budgetSession: '单会话预算（美元）',
+  budgetNone: '未设置',
+  budgetMonthSum: '月度预算（美元），各配置档之和',
+  ovBudget: '预算',
+  budgetSave: '保存',
+  budgetHelp: '按自然月计，分配置档（分连接）保存。达到 80% 与 100% 时提醒。',
+  budgetSpent: '已花',
+  budgetNear: '接近上限',
+  budgetOver: '超出上限',
+  budgetOk: '预算内',
+  alertMonthNear: '月度预算：已用 80%',
+  alertMonthOver: '月度预算已超支',
+  alertSessionOver: '有会话超出预算',
+  alertSessionNear: '有会话接近预算上限',
+  budgetSessionLabel: '单会话预算（美元）',
+  subAnalysis: '分析',
+  anIntro: '在 Hermes 内用你配置的模型运行。下面这份摘要就是实际会发送的内容。',
+  anShowDigest: '展开摘要',
+  anHideDigest: '收起摘要',
+  anIncludeArgs: '包含工具参数',
+  anQuick: '快速解释',
+  anQuickTip: '一次无状态模型调用（llm.oneshot），不会新建会话。',
+  anAudit: '完整审查',
+  anAuditTip: '新建一个会话、以该摘要为上下文，并把回答实时显示在这里。',
+  anBackground: '后台审查',
+  anBackgroundTip: '在聚焦的实时会话里无界面运行，完成后弹通知。',
+  anBackgroundNeedsLive: '后台审查需要本桌面有一个聚焦的实时会话。',
+  anRunning: '运行中…',
+  anInterrupted: '已中断（没有收到回答，请重跑）',
+  anCancel: '取消',
+  anOpenSession: '打开审查会话',
+  anCached: '已保存的回答',
+  anClear: '清除',
+  anNoDoor: '此网关未提供这一档所需的方法。',
+  anFailed: '分析失败',
+  alChannels: '提醒通道',
+  alChannelsHelp: '预算提醒总会在应用内弹出。选一个消息目标后，它们也会用网关已有的凭据通过 hermes send 推送到那里。在你选定之前不会发送任何内容。',
+  alNoTargets: '此网关未配置消息平台。请先在“消息平台”里设置一个。',
+  alNone: '仅应用内',
+  alSendTest: '发送测试',
+  alTestSent: '测试消息已发送',
+  alRefresh: '刷新',
+  alLoading: '正在询问网关…',
+  rpTitle: '定时报告',
+  rpHelp: '在网关主机上建一个定时任务，用 agent 生成报告并投递到你选的通道。每次运行消耗一个 agent 回合。',
+  rpSchedule: '频率',
+  rpDeliver: '投递到',
+  rpDays: '覆盖',
+  rpCreate: '创建报告任务',
+  rpCreated: '报告任务已创建',
+  rpNoTargets: '还没有投递目标设置默认频道。请先在目标对话里运行 /sethome。',
+  rpJobs: '任务',
+  rpNoJobs: '还没有报告任务。',
+  rpPause: '暂停',
+  rpResume: '继续',
+  rpRemove: '删除',
+  rpOtherJobs: '此网关上的其他定时任务',
+  rpCostNote: '每次运行的大致花费：默认模型一个 agent 回合，约等于一次短会话（近期均值 {usd}）。',
+  rpWeekly: '每周一 09:00',
+  rpDaily: '每天 09:00',
+  rpMonthly: '每月 1 日 09:00',
+  searchTitle: '标题',
+  searchContent: '内容',
+  searchContentHint: '在网关上对消息正文做全文检索',
+  searching: '检索中…',
+  noHits: '没有匹配该文本的会话。',
+  sortWorst: '最多失败',
+  scanNow: '扫描失败调用',
+  scanMore: '继续扫描',
+  scanning: '扫描中 {done}/{total}…',
+  scanned: '已扫描 {n} 个会话',
+  includeSuspected: '计入可疑项',
+  scanNeedsRest: '扫描需要读取消息分页，依赖核心 REST。',
+  archived: '已归档',
+  archivedTip: '包含已归档会话',
+  scopeTip: '显示哪个配置档。预算、扫描结果与已保存的回答按配置档分别保存。',
+  scopeActive: '当前',
+  scopeAll: '全部配置档',
+  ovByProfile: '按配置档',
+  ovProfileUnreadable: '无法读取',
+  anOwnerChanged: '配置档或连接已改变。请切回该配置档后重跑。',
+  anNoRoute: '请先连接该会话所属的配置档，再运行分析。',
+  anBackgroundNeedsProfile: '后台审查需要同一配置档上有一个实时会话。',
+  liveTokens: 'Token',
+  liveIn: '输入',
+  liveOut: '输出',
+  liveRunning: '进行中',
+  estSuffix: '估算',
+  naValue: '暂无数据',
+  toolDone: '完成',
+  cacheShort: '缓存',
+  anEmpty: '（空回答）',
 }
 
 // t(): reactive translator when the SDK has plugin i18n, plain lookup otherwise.
@@ -3241,8 +3475,8 @@ function SubagentsPane({ t, analysis, session }) {
             jsx('span', { style: { fontFamily: mono, color: text.primary }, children: sa.model || 'subagent' }),
             jsx('span', { style: { color: text.tertiary }, children: sa.status }),
             jsx('span', { style: { color: text.tertiary }, children: fmtDuration(sa.durationSeconds) }),
-            sa.apiCalls ? jsx('span', { style: { color: text.tertiary }, children: `${sa.apiCalls} calls` }) : null,
-            sa.tokens.input ? jsx('span', { style: { color: text.tertiary }, children: `${fmtCount(sa.tokens.input)} in / ${fmtCount(sa.tokens.output)} out` }) : null,
+            sa.apiCalls ? jsx('span', { style: { color: text.tertiary }, children: `${sa.apiCalls} ${t('liveCalls')}` }) : null,
+            sa.tokens.input ? jsx('span', { style: { color: text.tertiary }, children: `${fmtCount(sa.tokens.input)} ${t('liveIn')} / ${fmtCount(sa.tokens.output)} ${t('liveOut')}` }) : null,
             sa.costUsd !== null ? jsx('span', { style: { fontFamily: mono, color: text.secondary }, children: fmtUsd(sa.costUsd) }) : null
           ]
         }),
@@ -3389,13 +3623,13 @@ function SessionDetail({ t, session }) {
 // ui: live (timeline pane, live card, chip figures)
 // ---------------------------------------------------------------------------
 
-function ToolLine({ tool }) {
+function ToolLine({ tool, t }) {
   const color = tool.verdict === 'failed' ? text.red : tool.verdict === 'suspected' ? 'var(--ui-yellow)' : tool.endedAt ? text.primary : text.accent
   return jsxs('div', {
     style: { display: 'flex', gap: 8, alignItems: 'baseline', fontSize: '0.75rem', padding: '2px 0' },
     children: [
       jsx('span', { style: { fontFamily: mono, color, minWidth: 110 }, children: tool.name }),
-      jsx('span', { style: { color: text.tertiary, minWidth: 40 }, children: ['interrupted', 'unknown'].includes(tool.verdict) ? tool.verdict : tool.endedAt ? (tool.durationS !== null ? `${tool.durationS.toFixed(1)}s` : 'done') : '…' }),
+      jsx('span', { style: { color: text.tertiary, minWidth: 40 }, children: ['interrupted', 'unknown'].includes(tool.verdict) ? tool.verdict : tool.endedAt ? (tool.durationS !== null ? `${tool.durationS.toFixed(1)}s` : t('toolDone')) : '…' }),
       jsx('span', { style: { color: text.secondary, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: tool.error || tool.summary || (tool.args && tool.args.command) || (tool.args && (tool.args.path || tool.args.file_path)) || '' })
     ]
   })
@@ -3405,7 +3639,7 @@ function TimelinePane({ t, storedId }) {
   const all = useValue($live)
   const rec = Object.values(all).find(r => r.storedId === storedId) || null
   if (!rec || !rec.tools.length) return jsxs('div', { children: [jsx(Muted, { children: t('noTimeline') }), jsx(Muted, { children: t('liveOnlyOwn') })] })
-  return jsx('div', { children: rec.tools.slice().reverse().map(tool => jsx(ToolLine, { tool }, tool.toolId)) })
+  return jsx('div', { children: rec.tools.slice().reverse().map(tool => jsx(ToolLine, { tool, t }, tool.toolId)) })
 }
 
 function LiveSubagentRow({ sa, t }) {
@@ -3482,23 +3716,23 @@ function LiveCard() {
         ]
       }),
       liveModel ? jsx(Muted, { style: { fontFamily: mono }, children: liveModel }) : null,
-      line('tokens', usage ? `${fmtCount(usage.input)} in / ${fmtCount(usage.output)} out` : 'n/a'),
-      line(t('liveCalls'), usage ? String(num(usage.calls)) : 'n/a'),
+      line(t('liveTokens'), usage ? `${fmtCount(usage.input)} ${t('liveIn')} / ${fmtCount(usage.output)} ${t('liveOut')}` : t('naValue')),
+      line(t('liveCalls'), usage ? String(num(usage.calls)) : t('naValue')),
       ctx !== null ? line(t('liveContext'), `${ctx}%`, ctx >= 85 ? 'bad' : undefined) : null,
       usage && num(usage.compressions) ? line(t('compressions'), String(usage.compressions)) : null,
       jsx(Tip, {
         label: est ? est.source : t('liveNoRate'),
-        children: line(t('liveEstimate'), spentEstimated ? `${fmtUsd(spentNow)} est` : est ? `${fmtUsd(est.usd)} est` : t('liveNoRate'))
+        children: line(t('liveEstimate'), spentEstimated ? `${fmtUsd(spentNow)} ${t('estSuffix')}` : est ? `${fmtUsd(est.usd)} ${t('estSuffix')}` : t('liveNoRate'))
       }),
-      childLive.count ? line(t('trueCost'), `${fmtUsd(spentNow)}${spentEstimated ? ' est' : ''}`) : null,
+      childLive.count ? line(t('trueCost'), `${fmtUsd(spentNow)}${spentEstimated ? ` ${t('estSuffix')}` : ''}`) : null,
       storedCost !== null ? line(t('spend'), `${fmtUsd(storedCost)} (${stored.cost.status || 'stored'})`) : null,
       sessionBudget.limit !== null ? line(t('budgetSessionLabel'), `${fmtUsd(sessionBudget.spent)} / ${fmtUsd(sessionBudget.limit)}`, sessionBudget.level === 'over' || sessionBudget.level === 'near' ? 'bad' : undefined) : null,
       line(t('liveTools'), `${tools.length}${failed ? ` (${failed} ${t('failed')})` : ''}`, failed ? 'bad' : undefined),
-      lastTool ? jsx(ToolLine, { tool: lastTool }) : null,
+      lastTool ? jsx(ToolLine, { tool: lastTool, t }) : null,
       running.length || (rec && rec.subagents.length)
         ? jsxs('div', {
             children: [
-              jsx('div', { style: { fontSize: '0.6875rem', color: text.tertiary, marginTop: 4 }, children: `${t('liveSubagents')} (${running.length} running)` }),
+              jsx('div', { style: { fontSize: '0.6875rem', color: text.tertiary, marginTop: 4 }, children: `${t('liveSubagents')} (${running.length} ${t('liveRunning')})` }),
               ...rec.subagents.slice(-6).map(sa => jsx(LiveSubagentRow, { sa, t }, sa.key))
             ]
           })
@@ -3675,7 +3909,7 @@ function TaskTable({ t, byTask }) {
           children: [
             jsx('span', { style: { fontFamily: mono, color: text.primary, minWidth: 220 }, children: x.task || '(main)' }),
             jsx('span', { style: { fontFamily: mono, color: text.secondary, minWidth: 70 }, children: fmtUsd(x.estimated) }),
-            jsx('span', { style: { color: text.tertiary }, children: `${fmtCount(x.input)} in / ${fmtCount(x.output)} out, ${x.apiCalls} calls, ${x.models.join(', ')}` })
+            jsx('span', { style: { color: text.tertiary }, children: `${fmtCount(x.input)} ${t('liveIn')} / ${fmtCount(x.output)} ${t('liveOut')}, ${x.apiCalls} ${t('liveCalls')}, ${x.models.join(', ')}` })
           ]
         }, x.task)
       )
@@ -3960,7 +4194,7 @@ function OverviewTab() {
               jsx(LedgerRow, { label: t('ovMonth'), value: fmtUsd(figures.monthToDate), tone: monthTone, strong: true }),
               jsx(Tip, {
                 label: t('ovProjectedTip'),
-                children: jsx(LedgerRow, { label: t('ovProjected'), value: `${fmtUsd(figures.projectedMonth)} est`, tone: 'muted' })
+                children: jsx(LedgerRow, { label: t('ovProjected'), value: `${fmtUsd(figures.projectedMonth)} ${t('estSuffix')}`, tone: 'muted' })
               }),
               jsx(LedgerRule, { heavy: true }),
               jsx(Muted, {
@@ -4255,7 +4489,7 @@ function AnalysisPane({ t, session, analysis }) {
             children: [
               jsx(Muted, { style: { marginBottom: 4 }, children: `${t('anCached')} (${saved.kind}, ${fmtWhen(saved.at / 1000)}${answerStatus && answerStatus !== 'done' ? `, ${answerStatus}` : ''})` }),
               saved.recovered ? jsx(Muted, { children: saved.truncated ? 'Recovered from a partial transcript. Completion is unknown.' : 'Recovered from the audit session. Completion was not observed.' }) : null,
-              answerText ? jsx(AnswerBody, { text: answerText }) : jsx(Muted, { children: answerStatus === 'done' ? '(empty answer)' : answerStatus === 'interrupted' ? t('anInterrupted') : t('anRunning') })
+              answerText ? jsx(AnswerBody, { text: answerText }) : jsx(Muted, { children: answerStatus === 'done' ? t('anEmpty') : answerStatus === 'interrupted' ? t('anInterrupted') : t('anRunning') })
             ]
           })
         : null
@@ -4593,9 +4827,9 @@ function Chip() {
   const rate = stored ? cacheHitRate(stored.tokens) : null
   const parts = []
   const showEst = childLive.count ? busy || storedTree === null : !!est
-  if (chipUsd !== null) parts.push(`${fmtUsd(chipUsd)}${showEst ? ' est' : ''}`)
-  if (rate !== null) parts.push(`${fmtPct(rate)} cache`)
-  const label = parts.length ? parts.join(' · ') : 'ledger'
+  if (chipUsd !== null) parts.push(`${fmtUsd(chipUsd)}${showEst ? ` ${t('estSuffix')}` : ''}`)
+  if (rate !== null) parts.push(`${fmtPct(rate)} ${t('cacheShort')}`)
+  const label = parts.length ? parts.join(' · ') : t('paneTitle')
 
   return jsx(Tip, {
     label: `${PLUGIN_NAME} · ${t('gateway')} ${gateway} · ${mode}${est ? ` · ${est.source}` : ''}`,
@@ -4929,7 +5163,7 @@ export default {
     }
 
     if (ctx.i18n && typeof ctx.i18n.register === 'function') {
-      onDispose(ctx.i18n.register({ en: EN }))
+      onDispose(ctx.i18n.register({ en: EN, zh: ZH }))
     }
 
     const contributions = [
