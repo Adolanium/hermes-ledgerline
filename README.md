@@ -82,6 +82,20 @@ If the sidebar item is missing, run **Reload desktop plugins**. Restart Hermes a
 
 The same `plugin.js` file is both the source and the installable artifact.
 
+### Languages
+
+Ledgerline follows the language selected in Hermes Desktop. Its translation
+bundles cover all six Desktop locales: English (`en`), Simplified Chinese
+(`zh`), Traditional Chinese (`zh-hant`), Japanese (`ja`), Arabic (`ar`), and
+Russian (`ru`). Arabic inherits Desktop's right-to-left direction. Desktop's
+language picker is separate from the CLI's larger list of supported languages.
+
+Each bundle covers the same 222 message keys. Some older messages outside the
+translation table, including recommendations, recovery notices, and updater
+controls, remain in English. Gateway-provided text and model answers are not
+translated by these bundles. Older Desktop versions without plugin i18n use
+English.
+
 ## AI, when you ask
 
 Quick explain, full audit, and background audit use your configured Hermes model. The digest you see in the pane is exactly what gets sent. Tool arguments stay out unless you tick that box.
