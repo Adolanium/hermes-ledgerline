@@ -33,7 +33,7 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 const PLUGIN_ID = 'ledgerline'
 const PLUGIN_NAME = 'Ledgerline'
 const ROUTE = '/ledgerline'
-const VERSION = '0.1.7'
+const VERSION = '0.1.8'
 const PAGE_SIZE = 100
 const KNOWN_ROWS_CAP = 1000
 // Enough daily rows to cover the 1st of a 31-day month on its 31st.
