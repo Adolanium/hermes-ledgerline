@@ -1,5 +1,5 @@
 name: "hermes-ledgerline"
-version: "0.1.8"
+version: "0.1.10"
 description: "Inspect session costs and usage in Hermes Desktop."
 author: "Adolanium"
 manifest_version: 1

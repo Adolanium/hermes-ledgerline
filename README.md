@@ -12,7 +12,7 @@
   One plugin file for Hermes Desktop. No backend, no restart. The same file
   works on a local gateway and on a remote one.
 
-  <sub>POWERED BY <a href="https://github.com/NousResearch/hermes-agent">HERMES AGENT</a> &nbsp;·&nbsp; COMMUNITY PLUGIN &nbsp;·&nbsp; VERSION 0.1.7</sub>
+  <sub>POWERED BY <a href="https://github.com/NousResearch/hermes-agent">HERMES AGENT</a> &nbsp;·&nbsp; COMMUNITY PLUGIN &nbsp;·&nbsp; VERSION 0.1.10</sub>
 
   <br /><br />
 
@@ -261,7 +261,7 @@ continue to use the existing root files.
 For development, edit the root files, then run `python scripts/build_catalog.py`.
 Commit the resulting `catalog/` files. CI runs `python scripts/build_catalog.py --check`
 to keep the package current, including any companion files. Catalog packaging
-releases use `catalog-v0.1.8` and are not marked as the latest standalone release.
+releases use `catalog-v0.1.10` and are not marked as the latest standalone release.
 
 ## License
 
